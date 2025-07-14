@@ -10,6 +10,11 @@ services:
       - ./pg-data:/var/lib/postgresql/data
     secrets:
       - postgres-pw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build: ./api
@@ -19,7 +24,8 @@ services:
     env_file:
       - ./connection.env
     depends_on:
-      - rpki-db
+      rpki-db:
+        condition: service_healthy
     secrets:
       - postgres-pw
 
@@ -29,7 +35,8 @@ services:
     env_file:
       - ./connection.env
     depends_on:
-      - rpki-db
+      rpki-db:
+        condition: service_healthy
     secrets:
       - postgres-pw
 
@@ -41,7 +48,8 @@ services:
     volumes:
       - ./log:/log
     depends_on:
-      - rpki-db
+      rpki-db:
+        condition: service_healthy
     secrets:
       - postgres-pw
 

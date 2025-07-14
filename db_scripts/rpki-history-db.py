@@ -149,6 +149,7 @@ class RPKIHistory:
                 dump_time timestamp (0) with time zone,
                 ingest_time timestamp with time zone DEFAULT CURRENT_TIMESTAMP)
             """)
+        self.conn.commit()
 
     def get_latest_dump_ts(self, c: psycopg.Cursor) -> None:
         c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
