@@ -1,0 +1,50 @@
+services:
+  rpki-db:
+    image: postgres:17.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-pw
+    env_file:
+      - ./connection.env
+    volumes:
+      - ./pg-data:/var/lib/postgresql/data
+    secrets:
+      - postgres-pw
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:8000:8000
+    env_file:
+      - ./connection.env
+    depends_on:
+      - rpki-db
+    secrets:
+      - postgres-pw
+
+  init-db:
+    build: ./db_scripts
+    command: ["init"]
+    env_file:
+      - ./connection.env
+    depends_on:
+      - rpki-db
+    secrets:
+      - postgres-pw
+
+  update-db:
+    build: ./db_scripts
+    command: ["update"]
+    env_file:
+      - ./connection.env
+    volumes:
+      - ./log:/log
+    depends_on:
+      - rpki-db
+    secrets:
+      - postgres-pw
+
+secrets:
+  postgres-pw:
+    file: ./secrets/postgres-pw.txt

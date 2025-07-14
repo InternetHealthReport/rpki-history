@@ -1,0 +1,4 @@
+beautifulsoup4==4.13.4
+psycopg==3.2.9
+psycopg-c==3.2.9
+requests==2.32.4

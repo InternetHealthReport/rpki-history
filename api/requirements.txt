@@ -1,0 +1,4 @@
+falcon==4.0.2
+gunicorn==23.0.0
+psycopg==3.2.9
+psycopg-c==3.2.9
