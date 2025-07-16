@@ -49,12 +49,29 @@ def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) ->
     vrps = get_covering_vrps_for_prefix_at_time(c, prefix, timestamp)
     if not vrps:
         return {'status': 'NotFound'}
+    same_origin_asn_found = False
     for vrp in vrps:
-        if (prefix.prefixlen <= vrp['max_length']
-            and vrp['asn'] != 0
-                and vrp['asn'] == asn):
+        if vrp['asn'] == 0 or vrp['asn'] != asn:
+            continue
+        same_origin_asn_found = True
+        if prefix.prefixlen <= vrp['max_length']:
             return {'status': 'Valid'}
-    return {'status': 'Invalid'}
+    if same_origin_asn_found:
+        return {
+            'status': 'Invalid',
+            'reason': {
+                'code': 'moreSpecific',
+                'description': 'Covering VRP with matching origin ASN found, but queried, prefix is more specific '''
+                'than maxLength attribute allows.'
+            }
+        }
+    return {
+        'status': 'Invalid',
+        'reason': {
+            'code': 'noMatchingOrigin',
+            'description': 'No covering VRP with matching origin ASN found.'
+        }
+    }
 
 
 def get_latest_dump_ts(c: psycopg.Cursor) -> datetime | None:
