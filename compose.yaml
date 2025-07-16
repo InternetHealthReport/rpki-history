@@ -27,7 +27,7 @@ services:
       rpki-db:
         condition: service_healthy
     secrets:
-      - postgres-pw
+      - postgres-ro-pw
 
   init-db:
     build: ./db_scripts
@@ -39,6 +39,8 @@ services:
         condition: service_healthy
     secrets:
       - postgres-pw
+      - postgres-ro-pw
+
 
   update-db:
     build: ./db_scripts
@@ -56,3 +58,5 @@ services:
 secrets:
   postgres-pw:
     file: ./secrets/postgres-pw.txt
+  postgres-ro-pw:
+    file: ./secrets/postgres-ro-pw.txt

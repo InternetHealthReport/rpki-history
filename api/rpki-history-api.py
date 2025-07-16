@@ -7,8 +7,8 @@ import psycopg
 
 db_host = os.environ['POSTGRES_HOST']
 db_dbname = os.environ['POSTGRES_DB']
-db_user = os.environ['POSTGRES_USER']
-with open('/run/secrets/postgres-pw', 'r') as f:
+db_user = os.environ['POSTGRES_RO_USER']
+with open('/run/secrets/postgres-ro-pw', 'r') as f:
     db_password = f.read()
 
 # These are the column names which should be retrieved from the database.

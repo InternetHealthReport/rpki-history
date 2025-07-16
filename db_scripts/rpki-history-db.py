@@ -9,6 +9,7 @@ from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 
 import psycopg
+import psycopg.sql
 import requests
 from bs4 import BeautifulSoup
 from psycopg.types.range import Range
@@ -133,6 +134,9 @@ class RPKIHistory:
         self.fetch_and_read_file()
 
     def init_db(self):
+        db_ro_user = os.environ['POSTGRES_RO_USER']
+        with open('/run/secrets/postgres-ro-pw', 'r') as f:
+            db_ro_password = f.read()
         with self.conn.cursor() as c:
             c.execute("""
             CREATE TABLE IF NOT EXISTS vrps (
@@ -151,6 +155,16 @@ class RPKIHistory:
                 deleted_vrps integer,
                 updated_vrps integer,
                 new_vrps integer)
+            """)
+            c.execute(psycopg.sql.SQL("""
+            CREATE ROLE {}
+            LOGIN
+            PASSWORD {}
+            """).format(
+                psycopg.sql.Identifier(db_ro_user),
+                psycopg.sql.Literal(db_ro_password)))
+            c.execute("""
+            GRANT SELECT ON vrps, metadata TO rpki_ro
             """)
         self.conn.commit()
 
