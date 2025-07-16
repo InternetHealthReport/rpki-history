@@ -171,6 +171,33 @@ class StatusResource:
             resp.media = get_rpki_status(c, parsed_prefix, timestamp, asn)
 
 
+class MetadataResource:
+    def __init__(self) -> None:
+        self.conn = psycopg.connect(
+            host=db_host,
+            dbname=db_dbname,
+            user=db_user,
+            password=db_password
+        )
+
+    def on_get(self, req: falcon.Request, resp: falcon.Response):
+        with self.conn.cursor() as c:
+            c.execute("""
+                SELECT dump_time, deleted_vrps, updated_vrps, new_vrps
+                FROM metadata
+                ORDER BY dump_time
+                """)
+            resp.media = [
+                {
+                    'timestamp': e[0].isoformat(),
+                    'deleted_vrps': e[1],
+                    'updated_vrps': e[2],
+                    'new_vrps': e[3]
+                } for e in c.fetchall()
+            ]
+
+
 application = falcon.App()
 application.add_route('/vrp', VRPResource())
 application.add_route('/status', StatusResource())
+application.add_route('/metadata', MetadataResource())

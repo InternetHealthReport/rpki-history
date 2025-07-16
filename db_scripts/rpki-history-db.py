@@ -147,7 +147,10 @@ class RPKIHistory:
             CREATE TABLE IF NOT EXISTS metadata (
                 id serial PRIMARY KEY,
                 dump_time timestamp (0) with time zone,
-                ingest_time timestamp with time zone DEFAULT CURRENT_TIMESTAMP)
+                ingest_time timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+                deleted_vrps integer,
+                updated_vrps integer,
+                new_vrps integer)
             """)
         self.conn.commit()
 
@@ -194,9 +197,16 @@ class RPKIHistory:
                     return
             self.get_latest_vrps(c)
 
-            c.execute('INSERT INTO metadata (dump_time) VALUES (%s)', (self.new_ts, ))
-            update_data = list()
+            num_deleted_vrps = len(set(self.latest_vrps.keys()) - self.new_vrps)
             update_vrps = self.new_vrps.intersection(self.latest_vrps.keys())
+            insert_vrps = self.new_vrps - self.latest_vrps.keys()
+            c.execute("""
+                INSERT INTO metadata (dump_time, deleted_vrps, updated_vrps, new_vrps)
+                VALUES (%s, %s, %s, %s)
+                """,
+                      (self.new_ts, num_deleted_vrps, len(update_vrps), len(insert_vrps)))
+
+            update_data = list()
             for vrp in update_vrps:
                 vrp_id, visible_range = self.latest_vrps[vrp]
                 update_data.append((Range(visible_range.lower, self.new_ts, bounds='[]'), vrp_id))
@@ -209,7 +219,7 @@ class RPKIHistory:
 
             insert_data = [
                 (vrp.prefix, vrp.asn, vrp.max_length, vrp.trust_anchor, Range(self.new_ts, self.new_ts, bounds='[]'))
-                for vrp in self.new_vrps - self.latest_vrps.keys()
+                for vrp in insert_vrps
             ]
             logging.info(f'Inserting {len(insert_data)} new VRPs')
             c.executemany("""
