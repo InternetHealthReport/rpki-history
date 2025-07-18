@@ -198,6 +198,7 @@ class MetadataResource:
 
 
 application = falcon.App()
+application.add_static_route('/', '/app/html', fallback_filename='index.html')
 application.add_route('/vrp', VRPResource())
 application.add_route('/status', StatusResource())
 application.add_route('/metadata', MetadataResource())

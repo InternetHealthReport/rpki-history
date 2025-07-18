@@ -92,7 +92,7 @@ class RPKIHistory:
         logging.info('Reading file')
         base = os.path.basename(self.new_file_url).removesuffix('.tgz')
         member = f'{base}/output/rpki-client.csv'
-        ps = sp.run(['tar', '--gunzip', '--extract', '--to-stdout', member],
+        ps = sp.run(['tar', 'x', '-z', '-O', '-f', '-', member],
                     input=self.new_file_content,
                     stdout=sp.PIPE,
                     check=True)

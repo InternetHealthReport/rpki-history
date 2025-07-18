@@ -1,5 +1,5 @@
 services:
-  rpki-db:
+  database:
     image: postgres:17.5
     restart: unless-stopped
     environment:
@@ -7,7 +7,7 @@ services:
     env_file:
       - ./connection.env
     volumes:
-      - ./pg-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     secrets:
       - postgres-pw
     healthcheck:
@@ -24,7 +24,7 @@ services:
     env_file:
       - ./connection.env
     depends_on:
-      rpki-db:
+      database:
         condition: service_healthy
     secrets:
       - postgres-ro-pw
@@ -35,7 +35,7 @@ services:
     env_file:
       - ./connection.env
     depends_on:
-      rpki-db:
+      database:
         condition: service_healthy
     secrets:
       - postgres-pw
@@ -50,10 +50,13 @@ services:
     volumes:
       - ./log:/log
     depends_on:
-      rpki-db:
+      database:
         condition: service_healthy
     secrets:
       - postgres-pw
+
+volumes:
+  postgres-data:
 
 secrets:
   postgres-pw:
