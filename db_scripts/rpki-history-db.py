@@ -28,11 +28,17 @@ class RPKIHistory:
         self.db_user = os.environ['POSTGRES_USER']
         with open('/run/secrets/postgres-pw', 'r') as f:
             self.db_password = f.read()
+        # The URL of the newest file.
         self.new_file_url = str()
+        # The content of the newest file (after download).
         self.new_file_content = bytes()
+        # The datetime of the newest file.
         self.new_ts = None
+        # The set of parsed VRPs from the newest file.
         self.new_vrps = set()
+        # The datetime of the latest available data in the database.
         self.latest_ts = None
+        # Map of VRP to (ID [database], visible time range [as psycopg Range]) tuple.
         self.latest_vrps = dict()
 
     def __enter__(self):
@@ -92,6 +98,7 @@ class RPKIHistory:
         logging.info('Reading file')
         base = os.path.basename(self.new_file_url).removesuffix('.tgz')
         member = f'{base}/output/rpki-client.csv'
+        # Scripts runs in Alpine-based Docker container.
         ps = sp.run(['tar', 'x', '-z', '-O', '-f', '-', member],
                     input=self.new_file_content,
                     stdout=sp.PIPE,
@@ -126,6 +133,7 @@ class RPKIHistory:
         return True
 
     def fetch_and_read_specific_file(self, ts: datetime) -> None:
+        """Fetch and process the file with the specified timestamp."""
         self.new_ts = ts
         self.new_file_url = os.path.join(
             ts.strftime(URL_FMT),
@@ -134,6 +142,9 @@ class RPKIHistory:
         self.fetch_and_read_file()
 
     def init_db(self):
+        """Initialize the database by creating the required tables and a read-only
+        user.
+        """
         db_ro_user = os.environ['POSTGRES_RO_USER']
         with open('/run/secrets/postgres-ro-pw', 'r') as f:
             db_ro_password = f.read()
@@ -169,6 +180,7 @@ class RPKIHistory:
         self.conn.commit()
 
     def get_latest_dump_ts(self, c: psycopg.Cursor) -> None:
+        """Get the available dump time ranges from the database."""
         c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
         res = c.fetchone()
         if res is not None:
@@ -176,8 +188,11 @@ class RPKIHistory:
         logging.info(f'Latest dump timestamp: {self.latest_ts}')
 
     def rows_to_vrp(self, c: psycopg.Cursor) -> dict:
+        """Transform the result set of the cursor to a map of VRP -> (id, visible)."""
         if c.description is None:
             return dict()
+        # To be robust against changes in the database schema and/or reordering of
+        # columns, use a index map.
         cn_idx = {column.name: idx for idx, column in enumerate(c.description)}
         return {
             VRP(
@@ -189,6 +204,7 @@ class RPKIHistory:
         }
 
     def get_latest_vrps(self, c: psycopg.Cursor) -> None:
+        """Get the set of latest available VRPs from the database (if any)."""
         if self.latest_ts is None:
             return
 
@@ -200,26 +216,35 @@ class RPKIHistory:
         logging.info(f'Loaded {len(self.latest_vrps)} VRPs from database')
 
     def update_db(self, timestamp: datetime = None):
+        """Update the database with data for the specified timestamp, or the newest data
+        if available and no timestamp is specified.
+        """
         with self.conn.cursor() as c:
             self.get_latest_dump_ts(c)
 
+            # Fetch new VRPs.
             if timestamp:
                 self.fetch_and_read_specific_file(timestamp)
             else:
                 if not self.fetch_and_read_new_file():
                     logging.info('No new data available.')
                     return
+            # Get latest VRPs from database.
             self.get_latest_vrps(c)
 
+            # Compute differences.
             num_deleted_vrps = len(set(self.latest_vrps.keys()) - self.new_vrps)
             update_vrps = self.new_vrps.intersection(self.latest_vrps.keys())
             insert_vrps = self.new_vrps - self.latest_vrps.keys()
+
+            # Insert metadata for this dump.
             c.execute("""
                 INSERT INTO metadata (dump_time, deleted_vrps, updated_vrps, new_vrps)
                 VALUES (%s, %s, %s, %s)
                 """,
                       (self.new_ts, num_deleted_vrps, len(update_vrps), len(insert_vrps)))
 
+            # Update visible ranges of existing VRPs.
             update_data = list()
             for vrp in update_vrps:
                 vrp_id, visible_range = self.latest_vrps[vrp]
@@ -231,6 +256,7 @@ class RPKIHistory:
                 WHERE id = %s
             """, update_data)
 
+            # Insert new VRPs.
             insert_data = [
                 (vrp.prefix, vrp.asn, vrp.max_length, vrp.trust_anchor, Range(self.new_ts, self.new_ts, bounds='[]'))
                 for vrp in insert_vrps

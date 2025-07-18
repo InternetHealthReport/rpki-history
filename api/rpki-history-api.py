@@ -181,6 +181,7 @@ class MetadataResource:
         )
 
     def on_get(self, req: falcon.Request, resp: falcon.Response):
+        """Return a list of dump timestamps and associated metadata."""
         with self.conn.cursor() as c:
             c.execute("""
                 SELECT dump_time, deleted_vrps, updated_vrps, new_vrps
@@ -198,6 +199,7 @@ class MetadataResource:
 
 
 application = falcon.App()
+# Show a landing page with descriptions based on README.
 application.add_static_route('/', '/app/html', fallback_filename='index.html')
 application.add_route('/vrp', VRPResource())
 application.add_route('/status', StatusResource())
