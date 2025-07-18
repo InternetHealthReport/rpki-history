@@ -62,7 +62,7 @@ def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) ->
             'status': 'Invalid',
             'reason': {
                 'code': 'moreSpecific',
-                'description': 'Covering VRP with matching origin ASN found, but queried, prefix is more specific '''
+                'description': 'Covering VRP with matching origin ASN found, but queried prefix is more specific '''
                 'than maxLength attribute allows.'
             }
         }

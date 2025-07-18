@@ -87,7 +87,7 @@ or at the latest dump time if no timestamp is specified.
 `status` is one of `[Valid, Invalid, NotFound]`.
 
 `reason` (only for `Invalid` status) gives more detailed information about why the
-status is Invalid. `code` is for automatic processing, while `description` provides a
+status is invalid. `code` is for automatic processing, while `description` provides a
 human-readable explanation.
 
 ```json
@@ -101,7 +101,7 @@ human-readable explanation.
   "status": "Invalid",
   "reason": {
     "code": "moreSpecific",
-    "description": "Covering VRP with matching origin ASN found, but queried, prefix is more specific than maxLength attribute allows."
+    "description": "Covering VRP with matching origin ASN found, but queried prefix is more specific than maxLength attribute allows."
   }
 }
 ```
