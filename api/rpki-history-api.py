@@ -1,6 +1,7 @@
 import ipaddress
 import os
 from datetime import datetime, timezone
+from typing import Tuple
 
 import falcon
 import psycopg
@@ -74,13 +75,17 @@ def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) ->
     }
 
 
-def get_latest_dump_ts(c: psycopg.Cursor) -> datetime | None:
+def get_available_dump_time_range(c: psycopg.Cursor) -> Tuple[datetime, datetime] | Tuple[None, None]:
     """Get the latest dump time as datetime from the database."""
-    c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
+    c.execute('SELECT dump_time FROM metadata ORDER BY dump_time ASC LIMIT 1')
     res = c.fetchone()
     if res is None:
-        return None
-    return res[0]
+        return None, None
+    earliest = res[0]
+    c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
+    res = c.fetchone()
+    latest = res[0]
+    return earliest, latest
 
 
 def parse_timestamp(timestamp: str) -> datetime:
@@ -121,10 +126,13 @@ class VRPResource:
             raise falcon.HTTPInvalidParam(str(e), 'prefix')
 
         with self.conn.cursor() as c:
+            earliest, latest = get_available_dump_time_range(c)
             if req.has_param('timestamp'):
                 timestamp = parse_timestamp(req.get_param('timestamp', required=True))
+                if earliest is None or timestamp < earliest or timestamp > latest:
+                    raise falcon.HTTPNotFound(description='Requested timestamp is outside of available data.')
             else:
-                timestamp = get_latest_dump_ts(c)
+                timestamp = latest
                 if timestamp is None:
                     raise falcon.HTTPInternalServerError(description='Failed to get latest dump time.')
 
@@ -161,10 +169,13 @@ class StatusResource:
         asn = req.get_param_as_int('asn', required=True)
 
         with self.conn.cursor() as c:
+            earliest, latest = get_available_dump_time_range(c)
             if req.has_param('timestamp'):
                 timestamp = parse_timestamp(req.get_param('timestamp', required=True))
+                if earliest is None or timestamp < earliest or timestamp > latest:
+                    raise falcon.HTTPNotFound(description='Requested timestamp is outside of available data.')
             else:
-                timestamp = get_latest_dump_ts(c)
+                timestamp = latest
                 if timestamp is None:
                     raise falcon.HTTPInternalServerError(description='Failed to get latest dump time.')
 
