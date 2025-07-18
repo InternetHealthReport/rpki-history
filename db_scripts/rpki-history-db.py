@@ -120,7 +120,7 @@ class RPKIHistory:
         Return True if new data is available, False otherwise.
         """
         self.get_new_file_url()
-        if not self.new_file_url or self.new_ts <= self.latest_ts:
+        if not self.new_file_url or (self.latest_ts and self.new_ts <= self.latest_ts):
             return False
         self.fetch_and_read_file()
         return True
