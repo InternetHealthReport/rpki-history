@@ -1,5 +1,6 @@
 import argparse
 import csv
+import io
 import ipaddress
 import logging
 import os
@@ -8,17 +9,18 @@ import sys
 from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import psycopg
 import psycopg.sql
 import requests
 from bs4 import BeautifulSoup
 from psycopg.types.range import Range
 
-vrp_tuple_fields = ['prefix', 'asn', 'max_length', 'trust_anchor']
+vrp_tuple_fields = ['prefix', 'asn', 'max_length']
 VRP = namedtuple('VRP', vrp_tuple_fields)
 
-URL_FMT = 'https://dango.attn.jp/rpkidata/%Y/%m/%d/'
-FILE_FMT = 'rpki-%Y%m%dT%H%M%SZ.tgz'
+RPKIVIEWS_HOST = 'https://dango.attn.jp'
+RPKIFLUTTER_VP = 'routinator-3.rpki.ripe.net'
 
 
 class RPKIHistory:
@@ -28,14 +30,14 @@ class RPKIHistory:
         self.db_user = os.environ['POSTGRES_USER']
         with open('/run/secrets/postgres-pw', 'r') as f:
             self.db_password = f.read()
+        self.url_fmt = str()
+        self.file_fmt = str()
         # The URL of the newest file.
         self.new_file_url = str()
         # The content of the newest file (after download).
         self.new_file_content = bytes()
         # The datetime of the newest file.
         self.new_ts = None
-        # The set of parsed VRPs from the newest file.
-        self.new_vrps = set()
         # The datetime of the latest available data in the database.
         self.latest_ts = None
         # Map of VRP to (ID [database], visible time range [as psycopg Range]) tuple.
@@ -55,92 +57,6 @@ class RPKIHistory:
             self.conn.rollback()
         self.conn.close()
 
-    @staticmethod
-    def get_datetime_from_filename(fname: str) -> datetime:
-        return datetime.strptime(fname, FILE_FMT).replace(tzinfo=timezone.utc)
-
-    def get_new_file_url(self) -> None:
-        """Get the URL of the newest available file."""
-        curr_ts = datetime.now(tz=timezone.utc)
-        folder_url = curr_ts.strftime(URL_FMT)
-        r = requests.get(folder_url)
-        # If we are just after midnight UTC, we should look at the previous day.
-        if r.status_code == 404:
-            curr_ts -= timedelta(hours=24)
-            folder_url = curr_ts.strftime(URL_FMT)
-            r = requests.get(folder_url)
-            try:
-                r.raise_for_status()
-            except Exception as e:
-                logging.error(f'Failed to get latest file: {e}')
-                return
-
-        soup = BeautifulSoup(r.text, features='html.parser')
-        new_file = str()
-        for link in soup.find_all('a'):
-            href = link['href']
-            if not href.startswith('rpki-'):
-                continue
-
-            file_ts = RPKIHistory.get_datetime_from_filename(href)
-            if self.new_ts is None or file_ts > self.new_ts:
-                self.new_ts = file_ts
-                new_file = href
-
-        if not new_file:
-            logging.error(f'Failed to find valid file in folder: {folder_url}')
-            return
-
-        self.new_file_url = os.path.join(folder_url, new_file)
-
-    def read_file(self) -> None:
-        """Read the contents of the downloaded file and parse VRP entries."""
-        logging.info('Reading file')
-        base = os.path.basename(self.new_file_url).removesuffix('.tgz')
-        member = f'{base}/output/rpki-client.csv'
-        # Scripts runs in Alpine-based Docker container.
-        ps = sp.run(['tar', 'x', '-z', '-O', '-f', '-', member],
-                    input=self.new_file_content,
-                    stdout=sp.PIPE,
-                    check=True)
-
-        for l in csv.DictReader(ps.stdout.decode().splitlines()):
-            asn = int(l['ASN'].removeprefix('AS'))
-            prefix = ipaddress.ip_network(l['IP Prefix'])
-            trust_anchor = l['Trust Anchor']
-            max_length = int(l['Max Length'])
-            self.new_vrps.add(VRP(prefix, asn, max_length, trust_anchor))
-        logging.info(f'Read {len(self.new_vrps)} unique VRPs from file')
-
-    def fetch_and_read_file(self) -> None:
-        """Download the file specified by new_file_url and parse its contents."""
-        logging.info(f'Fetching file: {self.new_file_url}')
-        r = requests.get(self.new_file_url)
-        r.raise_for_status()
-        self.new_file_content = r.content
-        self.read_file()
-
-    def fetch_and_read_new_file(self) -> bool:
-        """Find the newest available file and process it if it is not already in the
-        database.
-
-        Return True if new data is available, False otherwise.
-        """
-        self.get_new_file_url()
-        if not self.new_file_url or (self.latest_ts and self.new_ts <= self.latest_ts):
-            return False
-        self.fetch_and_read_file()
-        return True
-
-    def fetch_and_read_specific_file(self, ts: datetime) -> None:
-        """Fetch and process the file with the specified timestamp."""
-        self.new_ts = ts
-        self.new_file_url = os.path.join(
-            ts.strftime(URL_FMT),
-            ts.strftime(FILE_FMT)
-        )
-        self.fetch_and_read_file()
-
     def init_db(self):
         """Initialize the database by creating the required tables and a read-only
         user.
@@ -155,7 +71,6 @@ class RPKIHistory:
                 prefix cidr,
                 asn bigint,
                 max_length integer,
-                trust_anchor text,
                 visible tstzrange)
             """)
             c.execute("""
@@ -164,7 +79,7 @@ class RPKIHistory:
                 dump_time timestamp (0) with time zone,
                 ingest_time timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
                 deleted_vrps integer,
-                updated_vrps integer,
+                unchanged_vrps integer,
                 new_vrps integer)
             """)
             c.execute(psycopg.sql.SQL("""
@@ -231,42 +146,276 @@ class RPKIHistory:
                     return
             # Get latest VRPs from database.
             self.get_latest_vrps(c)
-
-            # Compute differences.
-            num_deleted_vrps = len(set(self.latest_vrps.keys()) - self.new_vrps)
-            update_vrps = self.new_vrps.intersection(self.latest_vrps.keys())
-            insert_vrps = self.new_vrps - self.latest_vrps.keys()
-
-            # Insert metadata for this dump.
-            c.execute("""
-                INSERT INTO metadata (dump_time, deleted_vrps, updated_vrps, new_vrps)
-                VALUES (%s, %s, %s, %s)
-                """,
-                      (self.new_ts, num_deleted_vrps, len(update_vrps), len(insert_vrps)))
-
-            # Update visible ranges of existing VRPs.
-            update_data = list()
-            for vrp in update_vrps:
-                vrp_id, visible_range = self.latest_vrps[vrp]
-                update_data.append((Range(visible_range.lower, self.new_ts, bounds='[]'), vrp_id))
-            logging.info(f'Updating {len(update_data)} VRPs')
-            c.executemany("""
-                UPDATE vrps
-                SET visible = %s
-                WHERE id = %s
-            """, update_data)
-
-            # Insert new VRPs.
-            insert_data = [
-                (vrp.prefix, vrp.asn, vrp.max_length, vrp.trust_anchor, Range(self.new_ts, self.new_ts, bounds='[]'))
-                for vrp in insert_vrps
-            ]
-            logging.info(f'Inserting {len(insert_data)} new VRPs')
-            c.executemany("""
-                INSERT INTO vrps (prefix, asn, max_length, trust_anchor, visible)
-                VALUES (%s, %s, %s, %s, %s)
-            """, insert_data)
+            self.process_vrps(c)
             self.conn.commit()
+
+    def fetch_and_read_file(self) -> None:
+        """Download the file specified by new_file_url and parse its contents."""
+        logging.info(f'Fetching file: {self.new_file_url}')
+        r = requests.get(self.new_file_url)
+        r.raise_for_status()
+        self.new_file_content = r.content
+        self.read_file()
+
+    def fetch_and_read_new_file(self) -> bool:
+        """Find the newest available file and process it if it is not already in the
+        database.
+
+        Return True if new data is available, False otherwise.
+        """
+        self.get_new_file_url()
+        if not self.new_file_url or (self.latest_ts and self.new_ts <= self.latest_ts):
+            return False
+        self.fetch_and_read_file()
+        return True
+
+    def fetch_and_read_specific_file(self, ts: datetime) -> None:
+        """Fetch and process the file with the specified timestamp."""
+        self.new_ts = ts
+        self.new_file_url = os.path.join(
+            ts.strftime(self.url_fmt),
+            ts.strftime(self.file_fmt)
+        )
+        self.fetch_and_read_file()
+
+    def get_new_file_url(self) -> None:
+        raise NotImplementedError()
+
+    def read_file(self) -> None:
+        raise NotImplementedError()
+
+    def process_vrps(self, c: psycopg.Cursor) -> None:
+        raise NotImplementedError()
+
+
+class RPKIViews(RPKIHistory):
+    def __init__(self) -> None:
+        super().__init__()
+        # The set of parsed VRPs from the newest file.
+        self.new_vrps = set()
+        self.url_fmt = os.path.join(RPKIVIEWS_HOST, 'rpkidata/%Y/%m/%d/')
+        self.file_fmt = 'rpki-%Y%m%dT%H%M%SZ.tgz'
+
+    def get_datetime_from_filename(self, fname: str) -> datetime:
+        return datetime.strptime(fname, self.file_fmt).replace(tzinfo=timezone.utc)
+
+    def get_new_file_url(self) -> None:
+        """Get the URL of the newest available file."""
+        curr_ts = datetime.now(tz=timezone.utc)
+        folder_url = curr_ts.strftime(self.url_fmt)
+        r = requests.get(folder_url)
+        # If we are just after midnight UTC, we should look at the previous day.
+        if r.status_code == 404:
+            curr_ts -= timedelta(hours=24)
+            folder_url = curr_ts.strftime(self.url_fmt)
+            r = requests.get(folder_url)
+            try:
+                r.raise_for_status()
+            except Exception as e:
+                logging.error(f'Failed to get latest file: {e}')
+                return
+
+        soup = BeautifulSoup(r.text, features='html.parser')
+        new_file = str()
+        for link in soup.find_all('a'):
+            href = link['href']
+            if not href.startswith('rpki-'):
+                continue
+
+            file_ts = self.get_datetime_from_filename(href)
+            if self.new_ts is None or file_ts > self.new_ts:
+                self.new_ts = file_ts
+                new_file = href
+
+        if not new_file:
+            logging.error(f'Failed to find valid file in folder: {folder_url}')
+            return
+
+        self.new_file_url = os.path.join(folder_url, new_file)
+
+    def read_file(self) -> None:
+        """Read the contents of the downloaded file and parse VRP entries."""
+        logging.info('Reading file')
+        base = os.path.basename(self.new_file_url).removesuffix('.tgz')
+        member = f'{base}/output/rpki-client.csv'
+        # Scripts runs in Alpine-based Docker container.
+        ps = sp.run(['tar', 'x', '-z', '-O', '-f', '-', member],
+                    input=self.new_file_content,
+                    stdout=sp.PIPE,
+                    check=True)
+
+        for l in csv.DictReader(ps.stdout.decode().splitlines()):
+            asn = int(l['ASN'].removeprefix('AS'))
+            prefix = ipaddress.ip_network(l['IP Prefix'])
+            max_length = int(l['Max Length'])
+            self.new_vrps.add(VRP(prefix, asn, max_length))
+        logging.info(f'Read {len(self.new_vrps)} unique VRPs from file')
+
+    def process_vrps(self, c: psycopg.Cursor) -> None:
+        # Compute differences.
+        deleted_vrps = set(self.latest_vrps.keys()) - self.new_vrps
+        unchanged_vrps = self.new_vrps.intersection(self.latest_vrps.keys())
+        insert_vrps = self.new_vrps - self.latest_vrps.keys()
+
+        # Insert metadata for this dump.
+        c.execute("""
+            INSERT INTO metadata (dump_time, deleted_vrps, unchanged_vrps, new_vrps)
+            VALUES (%s, %s, %s, %s)
+            """,
+                  (self.new_ts, len(deleted_vrps), len(unchanged_vrps), len(insert_vrps)))
+
+        # Set upper bound of visible range for deleted VRPs.
+        delete_data = list()
+        for vrp in deleted_vrps:
+            vrp_id, visible_range = self.latest_vrps[vrp]
+            delete_data.append((Range(visible_range.lower, self.latest_ts, bounds='[]'), vrp_id))
+        logging.info(f'Setting upper bound of visible range for {len(delete_data)} VRPs')
+        c.executemany("""
+            UPDATE vrps
+            SET visible = %s
+            WHERE id = %s
+        """, delete_data)
+
+        # Insert new VRPs.
+        insert_data = [
+            (vrp.prefix, vrp.asn, vrp.max_length, Range(lower=self.new_ts, bounds='[)'))
+            for vrp in insert_vrps
+        ]
+        logging.info(f'Inserting {len(insert_data)} new VRPs')
+        c.executemany("""
+            INSERT INTO vrps (prefix, asn, max_length, visible)
+            VALUES (%s, %s, %s, %s)
+        """, insert_data)
+
+
+class RPKIFlutter(RPKIHistory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.url_fmt = 'https://rd-www-1.ripe.net/rpki_flutter/daily/'
+        self.file_fmt = 'rpki-flutter.%Y-%m-%d.parquet'
+        self.df = pd.DataFrame()
+
+    def get_new_file_url(self) -> None:
+        """Get the URL of the newest available file."""
+        curr_ts = datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # The file for the current day is actively updated, so we should only fetch data
+        # for the previous day.
+        self.new_ts = curr_ts - timedelta(days=1)
+        self.new_file_url = os.path.join(self.url_fmt, self.new_ts.strftime(self.file_fmt))
+
+        r = requests.head(self.new_file_url)
+        try:
+            r.raise_for_status()
+        except Exception as e:
+            logging.error(f'Failed to get latest file ({self.new_file_url}): {e}')
+            return
+
+    def read_file(self) -> None:
+        """Read the contents of the downloaded file and parse VRP entries."""
+        logging.info('Reading file')
+        self.df = pd.read_parquet(io.BytesIO(self.new_file_content),
+                                  columns=['type', 'vp', 'capture_ts', 'asn', 'pfx', 'maxlen'])
+        self.df = self.df[self.df['vp'] == RPKIFLUTTER_VP]
+        self.df['capture_ts'] = pd.to_datetime(self.df['capture_ts'], utc=True, unit='s')
+        self.df['asn'] = self.df['asn'].apply(lambda x: int(x.removeprefix('AS')))
+        self.df['pfx'] = self.df['pfx'].apply(lambda x: ipaddress.ip_network(x))
+        msg_counts = self.df['type'].value_counts()
+        state_msg = 0
+        announce_msg = 0
+        withdraw_msg = 0
+        if 'S' in msg_counts:
+            state_msg = msg_counts.loc['S']
+        if 'A' in msg_counts:
+            announce_msg = msg_counts.loc['A']
+        if 'W' in msg_counts:
+            withdraw_msg = msg_counts.loc['W']
+        logging.info(f'Read {len(self.df)} messages from file. {state_msg} state, {announce_msg} announce, '
+                     f'{withdraw_msg}, withdraw.')
+
+    def process_vrps(self, c: psycopg.Cursor) -> None:
+        # List of VRP rows that need to be updated, i.e., where in the previous dump and
+        # got withdrawn.
+        update_rows = list()
+        # List of new VRP rows that need to be inserted, but already have a complete
+        # range (caused by announce and withdraw within one dump).
+        insert_rows = list()
+        # Map new VRP rows, that need to be inserted, to their visible range (lower
+        # bound only).
+        insert_vrps = dict()
+        # These counters are not totally precise, e.g., if a VRP is announced and
+        # withdrawn in one dump.
+        num_deleted_vrps = 0
+        num_unchanged_vrps = 0
+        num_new_vrps = 0
+        for row in self.df.itertuples():
+            vrp = VRP(row.pfx, row.asn, row.maxlen)
+            match row.type:
+                # Start state should be the same as the latest dump, but sometimes it
+                # includes additional messages.
+                case 'S':
+                    if vrp not in self.latest_vrps:
+                        logging.warning(f'Adding VRP from start state even though it was not in the latest dump. {row}')
+                        insert_vrps[vrp] = Range(lower=row.capture_ts, bounds='[)')
+                        num_new_vrps += 1
+                    else:
+                        num_unchanged_vrps += 1
+                case 'A':
+                    if vrp in self.latest_vrps or vrp in insert_vrps:
+                        logging.warning(f'Ignoring duplicate announce: {row}')
+                        continue
+                    num_new_vrps += 1
+                    insert_vrps[vrp] = Range(lower=row.capture_ts, bounds='[)')
+                case 'W':
+                    if vrp not in self.latest_vrps and vrp not in insert_vrps:
+                        logging.warning(f'Withdraw of unknown VRP: {row}')
+                        continue
+                    num_deleted_vrps += 1
+                    if vrp in self.latest_vrps:
+                        vrp_id, visible_range = self.latest_vrps.pop(vrp)
+                        update_rows.append((Range(visible_range.lower, row.capture_ts, bounds='[]'), vrp_id))
+                    else:
+                        visible_range = insert_vrps.pop(vrp)
+                        insert_rows.append((
+                            vrp.prefix,
+                            vrp.asn,
+                            vrp.max_length,
+                            Range(visible_range.lower, row.capture_ts, bounds='[]')
+                        ))
+                case _:
+                    logging.error(f'Unknown message type: {row}')
+
+        # Insert metadata for this dump.
+        c.execute("""
+            INSERT INTO metadata (dump_time, deleted_vrps, unchanged_vrps, new_vrps)
+            VALUES (%s, %s, %s, %s)
+            """,
+                  (self.df['capture_ts'].max(), num_deleted_vrps, num_unchanged_vrps, num_new_vrps))
+
+        # Set upper bound of visible range for deleted VRPs.
+        logging.info(f'Setting upper bound of visible range for {len(update_rows)} VRPs')
+        c.executemany("""
+            UPDATE vrps
+            SET visible = %s
+            WHERE id = %s
+        """, update_rows)
+
+        # Insert new VRPs with visible range entirely within dump.
+        logging.info(f'Inserting {len(insert_rows)} fluttered VRPs')
+        c.executemany("""
+            INSERT INTO vrps (prefix, asn, max_length, visible)
+            VALUES (%s, %s, %s, %s)
+        """, insert_rows)
+
+        # Insert new VRPs.
+        insert_data = [
+            (vrp.prefix, vrp.asn, vrp.max_length, visible_range)
+            for vrp, visible_range in insert_vrps.items()
+        ]
+        logging.info(f'Inserting {len(insert_data)} new VRPs')
+        c.executemany("""
+            INSERT INTO vrps (prefix, asn, max_length, visible)
+            VALUES (%s, %s, %s, %s)
+        """, insert_data)
 
 
 if __name__ == '__main__':
@@ -286,8 +435,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('command')
     parser.add_argument('-t', '--timestamp', help='fetch file for specific timestamp (YYYYMMDDThh:mm:ss)')
+    parser.add_argument('-m', '--mode',
+                        choices=['rpkiviews', 'rpkiflutter'],
+                        default='rpkiflutter',
+                        help='data source')
     args = parser.parse_args()
-    rpki = RPKIHistory()
+    mode = args.mode
+    if mode == 'rpkiviews':
+        rpki = RPKIViews()
+    else:
+        rpki = RPKIFlutter()
     command = args.command
     match command:
         case 'init':

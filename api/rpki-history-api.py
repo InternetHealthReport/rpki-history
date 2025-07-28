@@ -13,7 +13,7 @@ with open('/run/secrets/postgres-ro-pw', 'r') as f:
     db_password = f.read()
 
 # These are the column names which should be retrieved from the database.
-vrp_dict_fields = ['prefix', 'asn', 'max_length', 'trust_anchor', 'visible']
+vrp_dict_fields = ['prefix', 'asn', 'max_length', 'visible']
 
 
 def rows_to_vrp(c: psycopg.Cursor) -> list:
@@ -140,8 +140,15 @@ class VRPResource:
             # Format for JSON serialization.
             for vrp in vrps:
                 vrp['prefix'] = vrp['prefix'].compressed
+                visible_range = vrp['visible']
+                # If the VRP is visible in the latest dump, the range has no upper
+                # bound.
+                if visible_range.upper is None:
+                    visible_to = latest.isoformat()
+                else:
+                    visible_to = visible_range.upper.isoformat()
                 vrp['visible'] = {'from': vrp['visible'].lower.isoformat(),
-                                  'to': vrp['visible'].upper.isoformat()}
+                                  'to': visible_to}
             resp.media = vrps
 
 
@@ -195,7 +202,7 @@ class MetadataResource:
         """Return a list of dump timestamps and associated metadata."""
         with self.conn.cursor() as c:
             c.execute("""
-                SELECT dump_time, deleted_vrps, updated_vrps, new_vrps
+                SELECT dump_time, deleted_vrps, unchanged_vrps, new_vrps
                 FROM metadata
                 ORDER BY dump_time
                 """)
@@ -203,7 +210,7 @@ class MetadataResource:
                 {
                     'timestamp': e[0].isoformat(),
                     'deleted_vrps': e[1],
-                    'updated_vrps': e[2],
+                    'unchanged_vrps': e[2],
                     'new_vrps': e[3]
                 } for e in c.fetchall()
             ]
