@@ -77,14 +77,11 @@ def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) ->
 
 def get_available_dump_time_range(c: psycopg.Cursor) -> Tuple[datetime, datetime] | Tuple[None, None]:
     """Get the latest dump time as datetime from the database."""
-    c.execute('SELECT dump_time FROM metadata ORDER BY dump_time ASC LIMIT 1')
+    c.execute('SELECT earliest, latest FROM dump_time_range')
     res = c.fetchone()
     if res is None:
         return None, None
-    earliest = res[0]
-    c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
-    res = c.fetchone()
-    latest = res[0]
+    earliest, latest = res
     return earliest, latest
 
 

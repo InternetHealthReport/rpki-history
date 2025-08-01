@@ -82,6 +82,12 @@ class RPKIHistory:
                 unchanged_vrps integer,
                 new_vrps integer)
             """)
+            c.execute("""
+            CREATE TABLE IF NOT EXISTS dump_time_range (
+                id integer PRIMARY KEY,
+                earliest timestamp (0) with time zone,
+                latest timestamp (0) with time zone)
+            """)
             c.execute(psycopg.sql.SQL("""
             CREATE ROLE {}
             LOGIN
@@ -90,13 +96,29 @@ class RPKIHistory:
                 psycopg.sql.Identifier(db_ro_user),
                 psycopg.sql.Literal(db_ro_password)))
             c.execute("""
-            GRANT SELECT ON vrps, metadata TO rpki_ro
+            GRANT SELECT ON vrps, metadata, dump_time_range TO rpki_ro
             """)
         self.conn.commit()
 
+    def insert_or_update_latest_dump_ts(self, c: psycopg.Cursor, ts: datetime) -> None:
+        """Update the latest dump time or initialize the table row if it not exists."""
+        # This table only has one row.
+        if self.latest_ts:
+            c.execute("""
+                UPDATE dump_time_range
+                SET latest = %s
+                WHERE id = 1
+            """, (ts, ))
+        else:
+            # No entry yet, initialize with one range.
+            c.execute("""
+                INSERT INTO dump_time_range
+                VALUES (1, %s, %s)
+            """, (ts, ts))
+
     def get_latest_dump_ts(self, c: psycopg.Cursor) -> None:
         """Get the available dump time ranges from the database."""
-        c.execute('SELECT dump_time FROM metadata ORDER BY dump_time DESC LIMIT 1')
+        c.execute('SELECT latest FROM dump_time_range')
         res = c.fetchone()
         if res is not None:
             self.latest_ts = res[0]
@@ -261,8 +283,8 @@ class RPKIViews(RPKIHistory):
         c.execute("""
             INSERT INTO metadata (dump_time, deleted_vrps, unchanged_vrps, new_vrps)
             VALUES (%s, %s, %s, %s)
-            """,
-                  (self.new_ts, len(deleted_vrps), len(unchanged_vrps), len(insert_vrps)))
+            """, (self.new_ts, len(deleted_vrps), len(unchanged_vrps), len(insert_vrps)))
+        self.insert_or_update_latest_dump_ts(c, self.new_ts)
 
         # Set upper bound of visible range for deleted VRPs.
         delete_data = list()
@@ -354,7 +376,10 @@ class RPKIFlutter(RPKIHistory):
                 # includes additional messages.
                 case 'S':
                     if vrp not in self.latest_vrps:
-                        logging.warning(f'Adding VRP from start state even though it was not in the latest dump. {row}')
+                        # Do not print message if there is no initial state yet.
+                        if self.latest_vrps:
+                            logging.warning(f'Adding VRP from start state even though it was not in the latest dump. '
+                                            f'{row}')
                         insert_vrps[vrp] = Range(lower=row.capture_ts, bounds='[)')
                         num_new_vrps += 1
                     else:
@@ -385,11 +410,12 @@ class RPKIFlutter(RPKIHistory):
                     logging.error(f'Unknown message type: {row}')
 
         # Insert metadata for this dump.
+        dump_time = self.df['capture_ts'].max()
         c.execute("""
             INSERT INTO metadata (dump_time, deleted_vrps, unchanged_vrps, new_vrps)
             VALUES (%s, %s, %s, %s)
-            """,
-                  (self.df['capture_ts'].max(), num_deleted_vrps, num_unchanged_vrps, num_new_vrps))
+            """, (dump_time, num_deleted_vrps, num_unchanged_vrps, num_new_vrps))
+        self.insert_or_update_latest_dump_ts(c, dump_time)
 
         # Set upper bound of visible range for deleted VRPs.
         logging.info(f'Setting upper bound of visible range for {len(update_rows)} VRPs')
@@ -433,11 +459,11 @@ if __name__ == '__main__':
     )
     logging.info(f'Started: {sys.argv}')
     parser = argparse.ArgumentParser()
-    parser.add_argument('command')
-    parser.add_argument('-t', '--timestamp', help='fetch file for specific timestamp (YYYYMMDDThh:mm:ss)')
+    parser.add_argument('command', choices=['init', 'update'])
+    parser.add_argument('-t', '--timestamp', help='fetch file for specific timestamp (YYYYMMDDThhmmss)')
     parser.add_argument('-m', '--mode',
                         choices=['rpkiviews', 'rpkiflutter'],
-                        default='rpkiflutter',
+                        default='rpkiviews',
                         help='data source')
     args = parser.parse_args()
     mode = args.mode
@@ -460,8 +486,5 @@ if __name__ == '__main__':
                     sys.exit(1)
             with rpki:
                 rpki.update_db(timestamp)
-        case _:
-            logging.error(f'Invalid command specified: {command}')
-            sys.exit(1)
     logging.info('Done')
     sys.exit(0)

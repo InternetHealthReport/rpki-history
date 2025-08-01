@@ -130,12 +130,65 @@ in the current one.
 ]
 ```
 
+## Getting Started
+
+Create secrets files containing the Postgres user passwords.
+
+```bash
+# For normal user
+touch ./secrets/postgres-pw.txt
+# For read-only user
+touch ./secrets/postgres-ro-pw.txt
+# Of course write actual passwords to these files...
+```
+
+Initialize database. This will also build the initial Docker image, which might take
+some time.
+
+```bash
+docker compose run --rm init-db
+```
+
+**Optional:** Restore database dump.
+
+```bash
+docker compose exec -T database pg_restore -d rpki_history < backup.dump
+```
+
+**Optional (but recommended):** Create an index over the prefix column to greatly
+decrease query time. This is not built into the init-db script, since it is faster to
+build the index once after all data was imported.
+
+```bash
+docker compose exec database psql -c "CREATE INDEX ON vrps USING gist (prefix inet_ops)"
+```
+
+Start the API server.
+
+```bash
+docker compose up -d api
+```
+
+## Updating the data
+
+To import the latest available data (uses RPKIViews by default):
+
+```bash
+docker compose run --rm update-db
+```
+
+For more usage options (e.g., importing a specific timestamp):
+
+```bash
+docker compose run --rm update-db --help
+```
+
 ## Backup/restore database
 
 ### Backup
 
 ```bash
-docker exec <db-container> pg_dump --data-only -Fc > backup.dump
+docker compose exec database pg_dump --data-only -Fc > backup.dump
 ```
 
 ### Restore
@@ -146,5 +199,5 @@ Assumes fresh install or that `postgres_data` volume was deleted.
 # Reinitialize database to create schema *and additional user*.
 docker compose run --rm init-db
 # Restore data
-docker exec -i <db-container> pg_restore -d rpki_history < backup.dump
+docker compose exec -T database pg_restore -d rpki_history < backup.dump
 ```
