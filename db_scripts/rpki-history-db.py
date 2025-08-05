@@ -1,5 +1,7 @@
 import argparse
+import base64
 import csv
+import hashlib
 import io
 import ipaddress
 import logging
@@ -173,11 +175,22 @@ class RPKIHistory:
 
     def fetch_and_read_file(self) -> None:
         """Download the file specified by new_file_url and parse its contents."""
-        logging.info(f'Fetching file: {self.new_file_url}')
-        r = requests.get(self.new_file_url)
-        r.raise_for_status()
-        self.new_file_content = r.content
-        self.read_file()
+        for attempt in range(1, 4):
+            logging.info(f'Attempt {attempt}')
+            logging.info(f'Fetching file: {self.new_file_url}')
+            r = requests.get(self.new_file_url)
+            try:
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                logging.error(f'Failed to fetch file: {e}')
+                continue
+            self.new_file_content = r.content
+            if self.verify_file_integrity():
+                continue
+            self.read_file()
+            return
+        logging.info('Too many failed attempts. Aborting.')
+        raise RuntimeError('Too many failed attempts.')
 
     def fetch_and_read_new_file(self) -> bool:
         """Find the newest available file and process it if it is not already in the
@@ -200,6 +213,10 @@ class RPKIHistory:
         )
         self.fetch_and_read_file()
 
+    def verify_file_integrity(self) -> bool:
+        # Default is no verification, i.e., never raise an error.
+        return False
+
     def get_new_file_url(self) -> None:
         raise NotImplementedError()
 
@@ -220,6 +237,35 @@ class RPKIViews(RPKIHistory):
 
     def get_datetime_from_filename(self, fname: str) -> datetime:
         return datetime.strptime(fname, self.file_fmt).replace(tzinfo=timezone.utc)
+
+    def verify_file_integrity(self) -> bool:
+        logging.info('Verifying file integrity.')
+        fname = os.path.basename(self.new_file_url)
+        hash_file_url = os.path.join(os.path.dirname(self.new_file_url), 'SHA256')
+        r = requests.get(hash_file_url)
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            logging.error(f'Failed to fetch SHA256 file: {e}')
+            return True
+        for line in r.text.splitlines():
+            line_split = line.split()
+            if len(line_split) != 4:
+                logging.warning(f'Ignoring invalid SHA256 line: {line}')
+                continue
+            line_fname = line_split[1].strip('()')
+            if line_fname != fname:
+                continue
+            expected_checksum = line_split[3]
+            break
+        logging.info(f'Expected checksum: {expected_checksum}')
+        actual_checksum = base64.b64encode(hashlib.sha256(self.new_file_content).digest()).decode()
+        logging.info(f'  Actual checksum: {actual_checksum}')
+        if actual_checksum == expected_checksum:
+            logging.info('Verification OK')
+            return False
+        logging.info('Verification FAIL')
+        return True
 
     def get_new_file_url(self) -> None:
         """Get the URL of the newest available file."""
