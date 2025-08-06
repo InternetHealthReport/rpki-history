@@ -40,20 +40,34 @@ error (to distinguish from non-existent VRPs).
 
 ### `/vrp`
 
-Parameters:
+Returns the list of covering VRPs for a prefix at a specific time, time range, or at the
+latest dump time if no time parameter is specified.
+
+Mandatory parameters:
 
 * `prefix`: The prefix for which to return covering VRPs.
-* `timestamp` (optional): The timestamp (in `%Y-%m-%dT%H:%M:%S` [assumes UTC] or unix
-epoch format) for which to check the status. If omitted, use the latest available dump
-time.
 
-Returns the list of covering VRPs for the specified prefix at the specified time, or at
-the latest dump time if no timestamp is specified.
+There are two types of time parameters, which are mutually exclusive: Point-in-time and
+time range. For a time range only one bound can be specified, in which case the returned
+list will include *all* earlier/later data available.
 
-`visible` refers to the timespan (containing the specified timestamp) during which the
-VRP was *continuously* visible, i.e., present in the dumps. Thus, if a VRP is missing
-from a dump, a new entry with a separate `visible` range is created. **This time is
-unrelated to the validity time (`Not before`/`Not after`) of the ROA!**
+Point-in-time:
+
+* `timestamp`: The timestamp (in `%Y-%m-%dT%H:%M:%S` [assumes UTC] or unix
+epoch format) for which to return VRPs.
+
+Time range:
+
+* `timestamp__gte`: The start of the time range (inclusive; in
+  `%Y-%m-%dT%H:%M:%S`[assumes UTC] or unix epoch format)
+  for which to return VRPs.
+* `timestamp__lte`: The end of the time range (inclusive; in `%Y-%m-%dT%H:%M:%S`
+  [assumes UTC] or unix epoch format) for which to return VRPs.
+
+`visible` refers to the timespan during which the VRP was *continuously* visible, i.e.,
+present in the dumps. Thus, if a VRP is missing from a dump, a new entry with a separate
+`visible` range is created. **This time is unrelated to the validity time (`Not
+before`/`Not after`) of the ROA!**
 
 ```json
 // /vrp?prefix=8.8.8.0/24

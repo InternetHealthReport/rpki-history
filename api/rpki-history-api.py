@@ -5,6 +5,7 @@ from typing import Tuple
 
 import falcon
 import psycopg
+from psycopg.types.range import Range
 
 db_host = os.environ['POSTGRES_HOST']
 db_dbname = os.environ['POSTGRES_DB']
@@ -39,6 +40,21 @@ def get_covering_vrps_for_prefix_at_time(c: psycopg.Cursor, prefix, timestamp: d
     return rows_to_vrp(c)
 
 
+def get_covering_vrps_for_prefix_within_timerange(c: psycopg.Cursor,
+                                                  prefix,
+                                                  timerange: Range) -> list:
+    """Return all covering VRPs for the specified prefix whose visible range overlaps
+    with the specified timerange.
+    """
+    c.execute("""
+        SELECT * FROM vrps
+        WHERE prefix >>= %s
+        AND visible && %s
+        ORDER BY visible
+    """, (prefix, timerange))
+    return rows_to_vrp(c)
+
+
 def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) -> dict:
     """Infer the RPKI status for the specified prefix/origin ASN combination at the
     specified timestamp.
@@ -62,7 +78,7 @@ def get_rpki_status(c: psycopg.Cursor, prefix, timestamp: datetime, asn: int) ->
             'status': 'Invalid',
             'reason': {
                 'code': 'moreSpecific',
-                'description': 'Covering VRP with matching origin ASN found, but queried prefix is more specific '''
+                'description': 'Covering VRP with matching origin ASN found, but queried prefix is more specific '
                 'than maxLength attribute allows.'
             }
         }
@@ -85,7 +101,7 @@ def get_available_dump_time_range(c: psycopg.Cursor) -> Tuple[datetime, datetime
     return earliest, latest
 
 
-def parse_timestamp(timestamp: str) -> datetime:
+def parse_timestamp(timestamp: str, param_name: str) -> datetime:
     """Parse a timestamp either in %Y-%m-%dT%H:%M:%S or unix epoch format and return the
     corresponding datetime.
     """
@@ -96,7 +112,7 @@ def parse_timestamp(timestamp: str) -> datetime:
     try:
         return datetime.fromtimestamp(int(timestamp), tz=timezone.utc)
     except ValueError:
-        raise falcon.HTTPInvalidParam('Timestamp has to be in epoch or %Y-%m-%dT%H:%M:%S format.', 'timestamp')
+        raise falcon.HTTPInvalidParam('Timestamp has to be in epoch or %Y-%m-%dT%H:%M:%S format.', param_name)
 
 
 class VRPResource:
@@ -122,18 +138,38 @@ class VRPResource:
         except ValueError as e:
             raise falcon.HTTPInvalidParam(str(e), 'prefix')
 
+        if (req.has_param('timestamp')
+            and (req.has_param('timestamp__gte') or
+                 req.has_param('timestamp__lte'))):
+            raise falcon.HTTPBadRequest(description='timestamp and timestamp__gte/lte parameters are exclusive.')
+
         with self.conn.cursor() as c:
             earliest, latest = get_available_dump_time_range(c)
             if req.has_param('timestamp'):
-                timestamp = parse_timestamp(req.get_param('timestamp', required=True))
+                timestamp = parse_timestamp(req.get_param('timestamp', required=True), 'timestamp')
                 if earliest is None or timestamp < earliest or timestamp > latest:
                     raise falcon.HTTPNotFound(description='Requested timestamp is outside of available data.')
+                vrps = get_covering_vrps_for_prefix_at_time(c, parsed_prefix, timestamp)
+            elif req.has_param('timestamp__gte') or req.has_param('timestamp__lte'):
+                timestamp_start = None
+                if req.has_param('timestamp__gte'):
+                    timestamp_start = parse_timestamp(req.get_param('timestamp__gte', required=True), 'timestamp__gte')
+                timestamp_end = None
+                if req.has_param('timestamp__lte'):
+                    timestamp_end = parse_timestamp(req.get_param('timestamp__lte', required=True), 'timestamp__lte')
+
+                if (earliest is None
+                    or (timestamp_start and timestamp_start < earliest)
+                        or (timestamp_end and timestamp_end > latest)):
+                    raise falcon.HTTPNotFound(description='Requested timerange is outside of available data.')
+
+                timerange = Range(timestamp_start, timestamp_end, bounds='[]')
+                vrps = get_covering_vrps_for_prefix_within_timerange(c, parsed_prefix, timerange)
             else:
                 timestamp = latest
                 if timestamp is None:
                     raise falcon.HTTPInternalServerError(description='Failed to get latest dump time.')
-
-            vrps = get_covering_vrps_for_prefix_at_time(c, parsed_prefix, timestamp)
+                vrps = get_covering_vrps_for_prefix_at_time(c, parsed_prefix, timestamp)
             # Format for JSON serialization.
             for vrp in vrps:
                 vrp['prefix'] = vrp['prefix'].compressed
