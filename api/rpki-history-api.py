@@ -283,11 +283,19 @@ class MetadataResource:
                 } for e in c.fetchall()
             ]
             # Only return a next URI if there are results left.
+            # This creates one unnecessary next_uri if the last page fits the
+            # remaining results exactly, but better than nothing.
             next_uri = str()
             if len(formatted_results) == page_size:
-                # This creates one unnecessary next_uri if the last page fits the
-                # remaining results exactly, but better than nothing.
-                next_uri = falcon.uri.encode(f'{req.prefix}{req.uri_template}?' + '&'.join(uri_parameters))
+                # Not sure how to solve this. If the application is proxied via a custom
+                # path, this part of the path is hidden, i.e., if the original URL is
+                # [schema]://[base]/some/path/metadata, the request object only contains
+                # [schema]://[base]/metadata.
+                # To solve this we pass the missing path information as a custom HTTP
+                # header...
+                proxy_path = req.get_header('x-proxy-path')
+                uri_base = '/'.join([e.strip('/') for e in [req.prefix, proxy_path, req.uri_template] if e])
+                next_uri = falcon.uri.encode(f'{uri_base}?' + '&'.join(uri_parameters))
             resp.media = {
                 'next': next_uri,
                 'results': formatted_results
