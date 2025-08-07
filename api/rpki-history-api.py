@@ -5,6 +5,7 @@ from typing import Tuple
 
 import falcon
 import psycopg
+import psycopg.sql as sql
 from psycopg.types.range import Range
 
 db_host = os.environ['POSTGRES_HOST']
@@ -230,16 +231,50 @@ class MetadataResource:
             user=db_user,
             password=db_password
         )
+        self.MAX_PAGE_SIZE = 10000
 
     def on_get(self, req: falcon.Request, resp: falcon.Response):
         """Return a list of dump timestamps and associated metadata."""
+        # We construct the query dynamically depending on which parameters the user specified.
+        query_parts = [sql.SQL('SELECT dump_time, deleted_vrps, unchanged_vrps, new_vrps FROM metadata ')]
+        # Parameters for the SQL query. Length needs to match the number of
+        # sql.Placeholder() instances we added in query_parts.
+        query_parameters = list()
+        # Gather parameters for the URI pointing to the next page.
+        uri_parameters = list()
+        connector = sql.SQL('WHERE ')
+        if req.has_param('timestamp__gte'):
+            timestamp_gte_param = req.get_param('timestamp__gte', required=True)
+            timestamp_start = parse_timestamp(timestamp_gte_param, 'timestamp__gte')
+            query_parts.append(connector)
+            query_parts.append(sql.SQL('dump_time >= {} ').format(sql.Placeholder()))
+            query_parameters.append(timestamp_start)
+            uri_parameters.append(f'timestamp__gte={timestamp_gte_param}')
+            connector = sql.SQL('AND ')
+        if req.has_param('timestamp__lte'):
+            timestamp_lte_param = req.get_param('timestamp__lte', required=True)
+            timestamp_end = parse_timestamp(req.get_param('timestamp__lte', required=True), 'timestamp__lte')
+            query_parts.append(connector)
+            query_parts.append(sql.SQL('dump_time <= {} ').format(sql.Placeholder()))
+            query_parameters.append(timestamp_end)
+            uri_parameters.append(f'timestamp__lte={timestamp_lte_param}')
+
+        page_size = self.MAX_PAGE_SIZE
+        if req.has_param('page_size'):
+            page_size = req.get_param_as_int('page_size', required=True, min_value=1, max_value=self.MAX_PAGE_SIZE)
+        page = 1
+        if req.has_param('page'):
+            page = req.get_param_as_int('page', required=True, min_value=1)
+        query_parts.append(sql.SQL('ORDER BY dump_time LIMIT {} OFFSET {}')
+                           .format(sql.Placeholder(), sql.Placeholder()))
+        query_parameters.append(page_size)
+        query_parameters.append((page - 1) * page_size)
+        uri_parameters.append(f'page_size={page_size}')
+        uri_parameters.append(f'page={page + 1}')
+
         with self.conn.cursor() as c:
-            c.execute("""
-                SELECT dump_time, deleted_vrps, unchanged_vrps, new_vrps
-                FROM metadata
-                ORDER BY dump_time
-                """)
-            resp.media = [
+            c.execute(sql.Composed(query_parts), query_parameters)
+            formatted_results = [
                 {
                     'timestamp': e[0].isoformat(),
                     'deleted_vrps': e[1],
@@ -247,6 +282,16 @@ class MetadataResource:
                     'new_vrps': e[3]
                 } for e in c.fetchall()
             ]
+            # Only return a next URI if there are results left.
+            next_uri = str()
+            if len(formatted_results) == page_size:
+                # This creates one unnecessary next_uri if the last page fits the
+                # remaining results exactly, but better than nothing.
+                next_uri = falcon.uri.encode(f'{req.prefix}{req.uri_template}?' + '&'.join(uri_parameters))
+            resp.media = {
+                'next': next_uri,
+                'results': formatted_results
+            }
 
 
 application = falcon.App()

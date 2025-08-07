@@ -43,7 +43,9 @@ error (to distinguish from non-existent VRPs).
 Returns the list of covering VRPs for a prefix at a specific time, time range, or at the
 latest dump time if no time parameter is specified.
 
-Mandatory parameters:
+#### Parameters
+
+Mandatory:
 
 * `prefix`: The prefix for which to return covering VRPs.
 
@@ -64,10 +66,7 @@ Time range:
 * `timestamp__lte`: The end of the time range (inclusive; in `%Y-%m-%dT%H:%M:%S`
   [assumes UTC] or unix epoch format) for which to return VRPs.
 
-`visible` refers to the timespan during which the VRP was *continuously* visible, i.e.,
-present in the dumps. Thus, if a VRP is missing from a dump, a new entry with a separate
-`visible` range is created. **This time is unrelated to the validity time (`Not
-before`/`Not after`) of the ROA!**
+#### Result Format
 
 ```json
 // /vrp?prefix=8.8.8.0/24
@@ -85,24 +84,29 @@ before`/`Not after`) of the ROA!**
 ]
 ```
 
+`visible` refers to the timespan during which the VRP was *continuously* visible, i.e.,
+present in the dumps. Thus, if a VRP is missing from a dump, a new entry with a separate
+`visible` range is created. **This time is unrelated to the validity time (`Not
+before`/`Not after`) of the ROA!**
+
 ### `/status`
-
-Parameters:
-
-* `prefix`: The prefix to be checked.
-* `asn`: The origin ASN of the prefix.
-* `timestamp` (optional): The timestamp (in `%Y-%m-%dT%H:%M:%S` [assumes UTC] or unix
-epoch format) for which to check the status. If omitted, use the latest available dump
-time.
 
 Returns the RPKI status for the specified prefix/ASN combination at the specified time,
 or at the latest dump time if no timestamp is specified.
 
-`status` is one of `[Valid, Invalid, NotFound]`.
+#### Parameters
 
-`reason` (only for `Invalid` status) gives more detailed information about why the
-status is invalid. `code` is for automatic processing, while `description` provides a
-human-readable explanation.
+Mandatory:
+
+* `prefix`: The prefix to be checked.
+* `asn`: The origin ASN of the prefix.
+
+Optional:
+
+* `timestamp`: The timestamp (in `%Y-%m-%dT%H:%M:%S` [assumes UTC] or unix epoch format)
+for which to check the status. If omitted, use the latest available dump time.
+
+#### Result Format
 
 ```json
 // /status?prefix=8.8.8.0/24&asn=15169
@@ -120,11 +124,49 @@ human-readable explanation.
 }
 ```
 
+`status` is one of `[Valid, Invalid, NotFound]`.
+
+`reason` (only for `Invalid` status) gives more detailed information about why the
+status is invalid. `code` is for automatic processing, while `description` provides a
+human-readable explanation.
+
 ### `/metadata`
 
-Parameters: None
+Returns the list of dumps contained in the database. Since this list is very long, this
+endpoint is paginated and returns at most 10000 results per page.
 
-Returns the list of dumps contained in the database.
+#### Parameters
+
+Mandatory: None
+
+Optional:
+
+* `timestamp__gte`: The start of the time range (inclusive; in
+  `%Y-%m-%dT%H:%M:%S`[assumes UTC] or unix epoch format)
+  for which to return data.
+* `timestamp__lte`: The end of the time range (inclusive; in `%Y-%m-%dT%H:%M:%S` [assumes UTC] or unix epoch format) for which to return data.
+* `page`: The page number to load (defaults to 1).
+* `page_size`: The number of results to include in one page (defaults to 10000).
+
+#### Result Format
+
+```json
+{
+  "next": "https://www.ihr.live/rpki-history/api/metadata?page_size=1000&page=2",
+  "results": [
+    {
+      "timestamp": "2020-12-06T16:37:23+00:00",
+      "deleted_vrps": 0,
+      "unchanged_vrps": 0,
+      "new_vrps": 205850
+    },
+    // ...
+  ]
+}
+```
+
+`next` is the URL to the next page. It will be an empty string if there are no results
+left.
 
 `timestamp` refers to the dump time (taken from the filename).
 
@@ -132,17 +174,6 @@ Returns the list of dumps contained in the database.
 dump. Note that `deleted` refers to a VRP that was present in the previous dump, but not
 in the current one.
 
-```json
-[
-  {
-    "timestamp": "2025-07-18T03:32:24+00:00",
-    "deleted_vrps": 9,
-    "updated_vrps": 723093,
-    "new_vrps": 16
-  },
-  // ...
-]
-```
 
 ## Getting Started
 
