@@ -1,1 +1,228 @@
-<h1>README</h1>
+<h1 id="rpki-history">RPKI History</h1>
+<p>An API to query historical RPKI data, more specifically, Validated
+ROA Payloads (VRPs).</p>
+<p>Links:</p>
+<ul>
+<li><a
+href="https://github.com/InternetHealthReport/rpki-history">GitHub</a></li>
+<li><a href="https://www.ihr.live/rpki-history/api/">API</a></li>
+</ul>
+<p>We obtain VRP data from the <a href="https://www.rpkiviews.org/">RPKI
+Views</a> project and store it in a compact form for fast access. From
+each dump we extract the <code>output/rpki-client.csv</code> file, which
+contains just the VRPs, and update our database.</p>
+<p>A VRP entry consists of five fields:</p>
+<pre class="csv"><code>ASN,IP Prefix,Max Length,Trust Anchor,Expires
+AS13335,1.0.0.0/24,24,apnic,1753280249</code></pre>
+<p>We ignore the expiry time and only work on dump-time granularity. For
+each ingested dump we compare the set of VRPs (in form of
+<code>asn, prefix, max_length</code>) with the previous dump. Each VRP
+has a <code>visible</code> time range, during which is was continuously
+visible. Since most VRPs are stable, this allows us to update just the
+time range, keeping the database size compact.</p>
+<p>Data limitations:</p>
+<ul>
+<li><p><strong>High-frequency updates are invisible.</strong> Currently,
+dumps are created roughly every 20 minutes. If a VRP expires / is
+removed and potentially recreated between dumps, this will not be
+reflected in the database.</p></li>
+<li><p><strong>Data is at dump-time granularity.</strong> If a VRP is
+created, expires, or is removed between dumps, the exact point in time
+is lost. For example, if there are two dumps at time <code>A</code> and
+<code>C</code>, a VRP expires at time <code>B</code>
+(<code>A &lt; B &lt; C</code>), and a user queries for timestamp
+<code>D</code> (<code>A &lt; D &lt; B</code>) then the query will not
+find the VRP, since its visibility ended at <code>A</code>. Similarly,
+VRPs that are only visible in one dump will have equal values for the
+start and end visibility time.</p></li>
+<li><p><strong>Queryable time range is limited.</strong> Naturally, we
+are limited by the amount of available data. Trying queries outside of
+the available time range will result in an error (to distinguish from
+non-existent VRPs).</p></li>
+</ul>
+<p>Data sources:</p>
+<ul>
+<li>2020-12-06 16:37:23 UTC to 2022-06-14 14:54:59 UTC: <a
+href="https://josephine.sobornost.net/rpkidata/">josephine.sobornost.net</a></li>
+<li>2022-06-14 15:08:09 UTC to now: <a
+href="https://dango.attn.jp/rpkidata/">dango.attn.jp</a></li>
+</ul>
+<h2 id="endpoints">Endpoints</h2>
+<h3 id="vrp"><code>/vrp</code></h3>
+<p>Returns the list of covering VRPs for a prefix at a specific time,
+time range, or at the latest dump time if no time parameter is
+specified.</p>
+<h4 id="parameters">Parameters</h4>
+<p>Mandatory:</p>
+<ul>
+<li><code>prefix</code>: The prefix for which to return covering
+VRPs.</li>
+</ul>
+<p>There are two types of time parameters, which are mutually exclusive:
+Point-in-time and time range. For a time range only one bound can be
+specified, in which case the returned list will include <em>all</em>
+earlier/later data available.</p>
+<p>Point-in-time:</p>
+<ul>
+<li><code>timestamp</code>: The timestamp (in
+<code>%Y-%m-%dT%H:%M:%S</code> [assumes UTC] or unix epoch format) for
+which to return VRPs.</li>
+</ul>
+<p>Time range:</p>
+<ul>
+<li><code>timestamp__gte</code>: The start of the time range (inclusive;
+in <code>%Y-%m-%dT%H:%M:%S</code>[assumes UTC] or unix epoch format) for
+which to return VRPs.</li>
+<li><code>timestamp__lte</code>: The end of the time range (inclusive;
+in <code>%Y-%m-%dT%H:%M:%S</code> [assumes UTC] or unix epoch format)
+for which to return VRPs.</li>
+</ul>
+<h4 id="result-format">Result Format</h4>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">https://www.ihr.live/rpki-history/api/vrp?prefix=8.8.8.0/24</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ot">[</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">{</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;prefix&quot;</span><span class="fu">:</span> <span class="st">&quot;8.8.8.0/24&quot;</span><span class="fu">,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;asn&quot;</span><span class="fu">:</span> <span class="dv">15169</span><span class="fu">,</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;max_length&quot;</span><span class="fu">:</span> <span class="dv">24</span><span class="fu">,</span></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;visible&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;from&quot;</span><span class="fu">:</span> <span class="st">&quot;2023-12-29T17:30:54+00:00&quot;</span><span class="fu">,</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;to&quot;</span><span class="fu">:</span> <span class="st">&quot;2025-08-13T06:29:10+00:00&quot;</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="ot">]</span></span></code></pre></div>
+<p><code>visible</code> refers to the timespan during which the VRP was
+<em>continuously</em> visible, i.e., present in the dumps. Thus, if a
+VRP is missing from a dump, a new entry with a separate
+<code>visible</code> range is created. <strong>This time is unrelated to
+the validity time (<code>Not before</code>/<code>Not after</code>) of
+the ROA!</strong></p>
+<h3 id="status"><code>/status</code></h3>
+<p>Returns the RPKI status for the specified prefix/ASN combination at
+the specified time, or at the latest dump time if no timestamp is
+specified.</p>
+<h4 id="parameters-1">Parameters</h4>
+<p>Mandatory:</p>
+<ul>
+<li><code>prefix</code>: The prefix to be checked.</li>
+<li><code>asn</code>: The origin ASN of the prefix.</li>
+</ul>
+<p>Optional:</p>
+<ul>
+<li><code>timestamp</code>: The timestamp (in
+<code>%Y-%m-%dT%H:%M:%S</code> [assumes UTC] or unix epoch format) for
+which to check the status. If omitted, use the latest available dump
+time.</li>
+</ul>
+<h4 id="result-format-1">Result Format</h4>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">https://www.ihr.live/rpki-history/api/status?prefix=8.8.8.0/24&amp;asn=15169</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;Valid&quot;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">https://www.ihr.live/rpki-history/api/status?prefix=8.8.8.0/25&amp;asn=15169</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;Invalid&quot;</span><span class="fu">,</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;reason&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;code&quot;</span><span class="fu">:</span> <span class="st">&quot;moreSpecific&quot;</span><span class="fu">,</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;Covering VRP with matching origin ASN found, but queried prefix is more specific than maxLength attribute allows.&quot;</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><code>status</code> is one of
+<code>[Valid, Invalid, NotFound]</code>.</p>
+<p><code>reason</code> (only for <code>Invalid</code> status) gives more
+detailed information about why the status is invalid. <code>code</code>
+is for automatic processing, while <code>description</code> provides a
+human-readable explanation.</p>
+<h3 id="metadata"><code>/metadata</code></h3>
+<p>Returns the list of dumps contained in the database. Since this list
+is very long, this endpoint is paginated and returns at most 10000
+results per page.</p>
+<h4 id="parameters-2">Parameters</h4>
+<p>Mandatory: None</p>
+<p>Optional:</p>
+<ul>
+<li><code>timestamp__gte</code>: The start of the time range (inclusive;
+in <code>%Y-%m-%dT%H:%M:%S</code>[assumes UTC] or unix epoch format) for
+which to return data.</li>
+<li><code>timestamp__lte</code>: The end of the time range (inclusive;
+in <code>%Y-%m-%dT%H:%M:%S</code> [assumes UTC] or unix epoch format)
+for which to return data.</li>
+<li><code>page</code>: The page number to load (defaults to 1).</li>
+<li><code>page_size</code>: The number of results to include in one page
+(defaults to 10000).</li>
+</ul>
+<h4 id="result-format-2">Result Format</h4>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="er">//</span> <span class="er">https://www.ihr.live/rpki-history/api/metadata</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;next&quot;</span><span class="fu">:</span> <span class="st">&quot;https://www.ihr.live/rpki-history/api/metadata?page_size=1000&amp;page=2&quot;</span><span class="fu">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;results&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;timestamp&quot;</span><span class="fu">:</span> <span class="st">&quot;2020-12-06T16:37:23+00:00&quot;</span><span class="fu">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;deleted_vrps&quot;</span><span class="fu">:</span> <span class="dv">0</span><span class="fu">,</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;unchanged_vrps&quot;</span><span class="fu">:</span> <span class="dv">0</span><span class="fu">,</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;new_vrps&quot;</span><span class="fu">:</span> <span class="dv">205850</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="er">//</span> <span class="er">...</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><code>next</code> is the URL to the next page. It will be an empty
+string if there are no results left.</p>
+<p><code>timestamp</code> refers to the dump time (taken from the
+filename).</p>
+<p><code>[deleted|updated|new]_vrps</code> indicates the number of VRPs
+differing from the previous dump. Note that <code>deleted</code> refers
+to a VRP that was present in the previous dump, but not in the current
+one.</p>
+<h2 id="database-dump">Database Dump</h2>
+<p>For easier analysis of the dataset, or self-hosting, <a
+href="https://archive.ihr.live/ihr/rpki-history/">a dump of the database
+(updated weekly) is available.</a></p>
+<h2 id="self-hosting">Self-hosting</h2>
+<p>If for some reason you want to host your own version of this page,
+here is how.</p>
+<h3 id="getting-started">Getting Started</h3>
+<p>Create secrets files containing the Postgres user passwords.</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># For normal user</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="fu">touch</span> ./secrets/postgres-pw.txt</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co"># For read-only user</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="fu">touch</span> ./secrets/postgres-ro-pw.txt</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Of course write actual passwords to these files...</span></span></code></pre></div>
+<p>Initialize database. This will also build the initial Docker image,
+which might take some time.</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose run <span class="at">--rm</span> init-db</span></code></pre></div>
+<p><strong>Optional:</strong> Restore database dump.</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose exec <span class="at">-T</span> database pg_restore <span class="at">-d</span> rpki_history <span class="op">&lt;</span> rpki-history.dump</span></code></pre></div>
+<p><strong>Optional (but recommended):</strong> Create an index over the
+prefix column to greatly decrease query time. This is not built into the
+init-db script, since it is faster to build the index once after all
+data was imported.</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose exec database psql <span class="at">-c</span> <span class="st">&quot;CREATE INDEX ON vrps USING gist (prefix inet_ops)&quot;</span></span></code></pre></div>
+<p>Start the API server.</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose up <span class="at">-d</span> api</span></code></pre></div>
+<h3 id="updating-the-data">Updating the Data</h3>
+<p>To import the latest available data (uses RPKIViews by default):</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose run <span class="at">--rm</span> update-db</span></code></pre></div>
+<p>For more usage options (e.g., importing a specific timestamp):</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose run <span class="at">--rm</span> update-db <span class="at">--help</span></span></code></pre></div>
+<h3 id="backuprestore-database">Backup/restore Database</h3>
+<h4 id="backup">Backup</h4>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose exec database pg_dump <span class="at">--data-only</span> <span class="at">-Fc</span> <span class="op">&gt;</span> rpki-history.dump</span></code></pre></div>
+<h4 id="restore">Restore</h4>
+<p>Assumes fresh install or that <code>postgres_data</code> volume was
+deleted.</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Reinitialize database to create schema *and additional user*.</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose run <span class="at">--rm</span> init-db</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="co"># Restore data</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="ex">docker</span> compose exec <span class="at">-T</span> database pg_restore <span class="at">-d</span> rpki_history <span class="op">&lt;</span> rpki-history.dump</span></code></pre></div>

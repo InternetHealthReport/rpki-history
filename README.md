@@ -2,10 +2,14 @@
 
 An API to query historical RPKI data, more specifically, Validated ROA Payloads (VRPs).
 
-We obtain VRP data from the [RPKI Views](https://www.rpkiviews.org/) project (the
-dango.attn.jp vantage point) and store it in a compact form for fast access. From each
-dump we extract the `output/rpki-client.csv` file, which contains just the VRPs, and
-update our database.
+Links:
+
+* [GitHub](https://github.com/InternetHealthReport/rpki-history)
+* [API](https://www.ihr.live/rpki-history/api/)
+
+We obtain VRP data from the [RPKI Views](https://www.rpkiviews.org/) project and store
+it in a compact form for fast access. From each dump we extract the
+`output/rpki-client.csv` file, which contains just the VRPs, and update our database.
 
 A VRP entry consists of five fields:
 
@@ -15,10 +19,10 @@ AS13335,1.0.0.0/24,24,apnic,1753280249
 ```
 
 We ignore the expiry time and only work on dump-time granularity. For each ingested dump
-we compare the set of VRPs (in form of `asn, prefix, max_length, trust_anchor`) with the
-previous dump. Each VRP has a `visible` time range, during which is was continuously
-visible. Since most VRPs are stable, this allows us to update just the time range,
-keeping the database size compact.
+we compare the set of VRPs (in form of `asn, prefix, max_length`) with the previous
+dump. Each VRP has a `visible` time range, during which is was continuously visible.
+Since most VRPs are stable, this allows us to update just the time range, keeping the
+database size compact.
 
 Data limitations:
 
@@ -26,15 +30,22 @@ Data limitations:
 every 20 minutes. If a VRP expires / is removed and potentially recreated between dumps,
 this will not be reflected in the database.
 
-* **Data is at dump-time granularity.** If a VRP expires / is removed
+* **Data is at dump-time granularity.** If a VRP is created, expires, or is removed
 between dumps, the exact point in time is lost. For example, if there are two dumps at
 time `A` and `C`, a VRP expires at time `B` (`A < B < C`), and a user queries for
 timestamp `D` (`A < D < B`) then the query will not find the VRP, since its visibility
-ended at `A`.
+ended at `A`. Similarly, VRPs that are only visible in one dump will have equal values
+for the start and end visibility time.
 
 * **Queryable time range is limited.** Naturally, we are limited by the amount of
 available data. Trying queries outside of the available time range will result in an
 error (to distinguish from non-existent VRPs).
+
+Data sources:
+
+* 2020-12-06 16:37:23 UTC to 2022-06-14 14:54:59 UTC:
+  [josephine.sobornost.net](https://josephine.sobornost.net/rpkidata/)
+* 2022-06-14 15:08:09 UTC to now: [dango.attn.jp](https://dango.attn.jp/rpkidata/)
 
 ## Endpoints
 
@@ -69,16 +80,15 @@ Time range:
 #### Result Format
 
 ```json
-// /vrp?prefix=8.8.8.0/24
+// https://www.ihr.live/rpki-history/api/vrp?prefix=8.8.8.0/24
 [
   {
     "prefix": "8.8.8.0/24",
     "asn": 15169,
     "max_length": 24,
-    "trust_anchor": "arin",
     "visible": {
-      "from": "2025-07-18T02:05:56+00:00",
-      "to": "2025-07-18T03:50:04+00:00"
+      "from": "2023-12-29T17:30:54+00:00",
+      "to": "2025-08-13T06:29:10+00:00"
     }
   }
 ]
@@ -109,12 +119,12 @@ for which to check the status. If omitted, use the latest available dump time.
 #### Result Format
 
 ```json
-// /status?prefix=8.8.8.0/24&asn=15169
+// https://www.ihr.live/rpki-history/api/status?prefix=8.8.8.0/24&asn=15169
 {
   "status": "Valid"
 }
 
-// /status?prefix=8.8.8.0/25&asn=15169
+// https://www.ihr.live/rpki-history/api/status?prefix=8.8.8.0/25&asn=15169
 {
   "status": "Invalid",
   "reason": {
@@ -151,6 +161,7 @@ Optional:
 #### Result Format
 
 ```json
+// https://www.ihr.live/rpki-history/api/metadata
 {
   "next": "https://www.ihr.live/rpki-history/api/metadata?page_size=1000&page=2",
   "results": [
@@ -174,8 +185,16 @@ left.
 dump. Note that `deleted` refers to a VRP that was present in the previous dump, but not
 in the current one.
 
+## Database Dump
 
-## Getting Started
+For easier analysis of the dataset, or self-hosting, [a dump of the database (updated
+weekly) is available.](https://archive.ihr.live/ihr/rpki-history/)
+
+## Self-hosting
+
+If for some reason you want to host your own version of this page, here is how.
+
+### Getting Started
 
 Create secrets files containing the Postgres user passwords.
 
@@ -197,7 +216,7 @@ docker compose run --rm init-db
 **Optional:** Restore database dump.
 
 ```bash
-docker compose exec -T database pg_restore -d rpki_history < backup.dump
+docker compose exec -T database pg_restore -d rpki_history < rpki-history.dump
 ```
 
 **Optional (but recommended):** Create an index over the prefix column to greatly
@@ -214,7 +233,7 @@ Start the API server.
 docker compose up -d api
 ```
 
-## Updating the data
+### Updating the Data
 
 To import the latest available data (uses RPKIViews by default):
 
@@ -228,15 +247,15 @@ For more usage options (e.g., importing a specific timestamp):
 docker compose run --rm update-db --help
 ```
 
-## Backup/restore database
+### Backup/restore Database
 
-### Backup
+#### Backup
 
 ```bash
-docker compose exec database pg_dump --data-only -Fc > backup.dump
+docker compose exec database pg_dump --data-only -Fc > rpki-history.dump
 ```
 
-### Restore
+#### Restore
 
 Assumes fresh install or that `postgres_data` volume was deleted.
 
@@ -244,5 +263,5 @@ Assumes fresh install or that `postgres_data` volume was deleted.
 # Reinitialize database to create schema *and additional user*.
 docker compose run --rm init-db
 # Restore data
-docker compose exec -T database pg_restore -d rpki_history < backup.dump
+docker compose exec -T database pg_restore -d rpki_history < rpki-history.dump
 ```
