@@ -212,7 +212,7 @@ class StatusResource:
         with self.conn.cursor() as c:
             earliest, latest = get_available_dump_time_range(c)
             if req.has_param('timestamp'):
-                timestamp = parse_timestamp(req.get_param('timestamp', required=True))
+                timestamp = parse_timestamp(req.get_param('timestamp', required=True), 'timestamp')
                 if earliest is None or timestamp < earliest or timestamp > latest:
                     raise falcon.HTTPNotFound(description='Requested timestamp is outside of available data.')
             else:
