@@ -302,7 +302,7 @@ class MetadataResource:
             }
 
 
-application = falcon.App()
+application = falcon.App(cors_enable=True)
 # Show a landing page with descriptions based on README.
 application.add_static_route('/', '/app/html', fallback_filename='index.html')
 application.add_route('/vrp', VRPResource())
