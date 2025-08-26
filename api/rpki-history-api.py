@@ -122,7 +122,8 @@ class VRPResource:
             host=db_host,
             dbname=db_dbname,
             user=db_user,
-            password=db_password
+            password=db_password,
+            autocommit=True
         )
 
     def on_get(self, req: falcon.Request, resp: falcon.Response):
@@ -192,7 +193,8 @@ class StatusResource:
             host=db_host,
             dbname=db_dbname,
             user=db_user,
-            password=db_password
+            password=db_password,
+            autocommit=True
         )
 
     def on_get(self, req: falcon.Request, resp: falcon.Response):
@@ -229,7 +231,8 @@ class MetadataResource:
             host=db_host,
             dbname=db_dbname,
             user=db_user,
-            password=db_password
+            password=db_password,
+            autocommit=True
         )
         self.MAX_PAGE_SIZE = 10000
 
