@@ -305,7 +305,24 @@ class MetadataResource:
             }
 
 
-application = falcon.App(cors_enable=True)
+class StripTrailingSlashMiddleware:
+    """Strip the trailing slash from the path before routing to support both types of
+    syntax:
+      * /endpoint <- authoritative
+      * /endpoint/
+    """
+
+    def process_request(self, req: falcon.Request, resp: falcon.Response):
+        # Do not strip the root (although it would still work due to our fallback
+        # route).
+        if req.path != '/':
+            req.path = req.path.rstrip('/')
+
+
+application = falcon.App(
+    cors_enable=True,
+    middleware=StripTrailingSlashMiddleware()
+)
 # Show a landing page with descriptions based on README.
 application.add_static_route('/', '/app/html', fallback_filename='index.html')
 application.add_route('/vrp', VRPResource())
