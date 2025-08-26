@@ -248,16 +248,23 @@ class RPKIViews(RPKIHistory):
         except requests.HTTPError as e:
             logging.error(f'Failed to fetch SHA256 file: {e}')
             return True
+        expected_checksum = str()
+        checksum_file_lines = 0
         for line in r.text.splitlines():
             line_split = line.split()
             if len(line_split) != 4:
                 logging.warning(f'Ignoring invalid SHA256 line: {line}')
                 continue
+            checksum_file_lines += 1
             line_fname = line_split[1].strip('()')
             if line_fname != fname:
                 continue
             expected_checksum = line_split[3]
             break
+        else:
+            logging.error(f'Failed to find checksum for this file. Parsed {checksum_file_lines} lines in checksum '
+                          'file.')
+            return True
         logging.info(f'Expected checksum: {expected_checksum}')
         actual_checksum = base64.b64encode(hashlib.sha256(self.new_file_content).digest()).decode()
         logging.info(f'  Actual checksum: {actual_checksum}')
