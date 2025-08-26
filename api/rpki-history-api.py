@@ -136,7 +136,7 @@ class VRPResource:
             raise falcon.HTTPMissingParam('prefix')
 
         try:
-            parsed_prefix = ipaddress.ip_network(req.get_param('prefix', required=True))
+            parsed_prefix = ipaddress.ip_network(req.get_param('prefix', required=True).strip())
         except ValueError as e:
             raise falcon.HTTPInvalidParam(str(e), 'prefix')
 
@@ -205,7 +205,7 @@ class StatusResource:
                 raise falcon.HTTPMissingParam(param)
 
         try:
-            parsed_prefix = ipaddress.ip_network(req.get_param('prefix', required=True))
+            parsed_prefix = ipaddress.ip_network(req.get_param('prefix', required=True).strip())
         except ValueError as e:
             raise falcon.HTTPInvalidParam(str(e), 'prefix')
 
