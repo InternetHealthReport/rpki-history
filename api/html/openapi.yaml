@@ -1,0 +1,367 @@
+openapi: 3.0.4
+info:
+  title: RPKI History API
+  description: |-
+    An API to query historical RPKI data, more specifically, Validated ROA Payloads
+    (VRPs).
+
+    We obtain VRP data from the [RPKI Views](https://www.rpkiviews.org/) project and
+    store it in a compact form for fast access. From each dump we extract the
+    `output/rpki-client.csv` file, which contains just the VRPs, and update our
+    database.
+
+    A VRP entry consists of five fields:
+
+    ```csv
+    ASN,IP Prefix,Max Length,Trust Anchor,Expires
+    AS13335,1.0.0.0/24,24,apnic,1753280249
+    ```
+
+    We ignore the expiry time and only work on dump-time granularity. For each ingested
+    dump we compare the set of VRPs (in form of `asn, prefix, max_length`) with the
+    previous dump. Each VRP has a `visible` time range, during which is was continuously
+    visible.  Since most VRPs are stable, this allows us to update just the time range,
+    keeping the database size compact.
+
+    Data limitations:
+
+    * **High-frequency updates are invisible.** Currently, dumps are created roughly
+    every 20 minutes. If a VRP expires / is removed and potentially recreated between
+    dumps, this will not be reflected in the database.
+
+    * **Data is at dump-time granularity.** If a VRP is created, expires, or is removed
+    between dumps, the exact point in time is lost. For example, if there are two dumps
+    at time `A` and `C`, a VRP expires at time `B` (`A < B < C`), and a user queries for
+    timestamp `D` (`A < D < B`) then the query will not find the VRP, since its
+    visibility ended at `A`. Similarly, VRPs that are only visible in one dump will have
+    equal values for the start and end visibility time.
+
+    * **Queryable time range is limited.** Naturally, we are limited by the amount of
+    available data. Trying queries outside of the available time range will result in an
+    error (to distinguish from non-existent VRPs).
+
+    Data sources:
+
+    * 2020-12-06 16:37:23 UTC to 2022-06-14 14:54:59 UTC:
+      [josephine.sobornost.net](https://josephine.sobornost.net/rpkidata/)
+    * 2022-06-14 15:08:09 UTC to now: [dango.attn.jp](https://dango.attn.jp/rpkidata/)
+  contact:
+    email: admin@ihr.live
+  license:
+    name: GPLv3
+    url: https://www.gnu.org/licenses/gpl-3.0.en.html
+  version: 1.0.0
+externalDocs:
+  description: GitHub repository
+  url: https://github.com/InternetHealthReport/rpki-history
+tags:
+  - name: vrp
+    description: Get full validated ROA payloads (VRPs)
+  - name: status
+    description: Get RPKI status
+  - name: metadata
+    description: Get information about dumps imported into the database
+paths:
+  /vrp:
+    get:
+      tags:
+        - vrp
+      summary: Get covering VRPs for a prefix.
+      description: |-
+        Returns the list of covering VRPs for a prefix at a specific time, time range,
+        or at the latest dump time if no time parameter is specified.
+
+        There are two types of time parameters, which are mutually exclusive:
+        Point-in-time and time range. For a time range only one bound can be specified,
+        in which case the returned list will include all earlier/later data available.
+
+        If no VRPs are found, returns an empty list. Returns an error 404 if the
+        requested time is outside of the available data range to distinguish between
+        these cases.
+      parameters:
+        - name: prefix
+          in: query
+          description: The prefix for which to return covering VRPs
+          required: true
+          schema:
+            $ref: "#/components/schemas/Prefix"
+        - name: timestamp
+          in: query
+          description: |-
+            The timestamp for which to return VRPs. Can be a Unix epoch or a string with
+            format `%Y-%m-%dT%H:%M:%S` (assumes UTC). For a time range use
+            `timestamp__gte` and `timestamp__lte` instead.
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+        - name: timestamp__gte
+          in: query
+          description: |-
+            The start of the time range for which to return VRPs. Can be a Unix epoch or
+            a string with format `%Y-%m-%dT%H:%M:%S` (assumes UTC). For an exact time
+            use `timestamp` instead.
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+        - name: timestamp__lte
+          in: query
+          description: |-
+            The end of the time range for which to return VRPs. Can be a Unix epoch or a
+            string with format `%Y-%m-%dT%H:%M:%S` (assumes UTC). For an exact time use
+            `timestamp` instead.
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    prefix:
+                      $ref: "#/components/schemas/Prefix"
+                    asn:
+                      $ref: "#/components/schemas/ASN"
+                    max_length:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      maximum: 128
+                    visible:
+                      type: object
+                      properties:
+                        from:
+                          $ref: "#/components/schemas/IsoDateTime"
+                        to:
+                          $ref: "#/components/schemas/IsoDateTime"
+                      required:
+                        - from
+                        - to
+                  required:
+                    - prefix
+                    - asn
+                    - max_length
+                    - visible
+
+        '400':
+          $ref: '#/components/responses/InvalidMissingParameter'
+        '404':
+          $ref: '#/components/responses/TimestampOutOfRange'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+  /status:
+    get:
+      tags:
+        - status
+      summary: Get RPKI status for a prefix / origin ASN combination.
+      description: |-
+        Returns the RPKI status for the specified prefix/ASN combination at the
+        specified time, or at the latest dump time if no timestamp is specified.
+
+        The returned object contains at least a `status` field with possible values:
+          * Valid: Covering VRP with matching origin found for this prefix at the
+          requested time.
+          * Invalid: Covering VRP with different origin or invalid max length found for
+          this prefix at the requested time.
+          * NotFound: No covering VRP found for this prefix at the requested time.
+
+        In case of `Invalid`, the returned object contains an additional `reason` field
+        with more detailed information about why the status is invalid. `code` (one of
+        `[moreSpecific, noMatchingOrigin]`) is for automatic processing, while
+        `description` provides a human-readable explanation.
+      parameters:
+        - name: prefix
+          in: query
+          description: The prefix for which to check the status
+          required: true
+          schema:
+            $ref: "#/components/schemas/Prefix"
+        - name: asn
+          in: query
+          description: The origin ASN for which to check the status
+          required: true
+          schema:
+            $ref: "#/components/schemas/ASN"
+        - name: timestamp
+          in: query
+          description: |-
+            The timestamp for which to check the status. Can be a Unix epoch or a string
+            with format `%Y-%m-%dT%H:%M:%S` (assumes UTC).
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - Valid
+                      - Invalid
+                      - NotFound
+                    example: Invalid
+                  reason:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - moreSpecific
+                          - noMatchingOrigin
+                      description:
+                        type: string
+                        example: Covering VRP with matching origin ASN found, but queried prefix is more specific than maxLength attribute allows.
+                    required:
+                      - code
+                      - description
+                required:
+                  - status
+        '400':
+          $ref: '#/components/responses/InvalidMissingParameter'
+        '404':
+          $ref: '#/components/responses/TimestampOutOfRange'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+  /metadata:
+    get:
+      tags:
+        - metadata
+      summary: Get information about dumps imported into the database.
+      description: |-
+        Returns the list of dumps contained in the database. Since this list is very
+        long, this endpoint is paginated and returns at most 10000 results per page.
+
+        * `next` is the URL to the next page. It will be an empty string if there are no
+        results left.
+        * `timestamp` refers to the dump time (taken from the filename).
+        * `[deleted|updated|new]_vrps` indicates the number of VRPs differing from the
+        previous dump. Note that deleted refers to a VRP that was present in the
+        previous dump, but not in the current one.
+      parameters:
+        - name: page
+          in: query
+          description: The page number to load
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: The number of results to include in one page
+          schema:
+            type: integer
+            minimum: 1
+            default: 10000
+        - name: timestamp__gte
+          in: query
+          description: |-
+            The start of the time range for which to return metadata. Can be a Unix
+            epoch or a string with format `%Y-%m-%dT%H:%M:%S` (assumes UTC).
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+        - name: timestamp__lte
+          in: query
+          description: |-
+            The end of the time range for which to return metadata. Can be a Unix epoch
+            or a string with format `%Y-%m-%dT%H:%M:%S` (assumes UTC).
+          schema:
+            $ref: "#/components/schemas/UnixDateTime"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  next:
+                    type: string
+                    format: uri
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          $ref: "#/components/schemas/IsoDateTime"
+                        deleted_vrps:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                        unchanged_vrps:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                        new_vrps:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                      required:
+                        - timestamp
+                        - deleted_vrps
+                        - unchanged_vrps
+                        - new_vrps
+                required:
+                  - next
+                  - results
+        '400':
+          $ref: '#/components/responses/InvalidMissingParameter'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+components:
+  schemas:
+    ASN:
+      type: integer
+      format: int32
+    Error:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+      required:
+        - title
+        - description
+    IsoDateTime:
+      type: string
+      format: date-time
+      # This needs to be quoted, else it will be recognized as a datetime, which breaks
+      # Falcon at the moment.
+      example: "1970-01-01T00:00:00+00:00"
+    Prefix:
+      type: string
+      example: 192.0.2.0/24
+    UnixDateTime:
+      oneOf:
+        - type: integer
+          format: int32
+        - type: string
+          format: date-time
+          # This needs to be quoted, else it will be recognized as a datetime, which
+          # breaks Falcon at the moment.
+          example: "1970-01-01T00:00:00"
+  responses:
+    InvalidMissingParameter:
+      description: Invalid or missing parameter
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TimestampOutOfRange:
+      description: Requested timestamp is outside of the available data range
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnexpectedError:
+      description: Unexpected error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

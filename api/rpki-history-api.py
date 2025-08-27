@@ -7,6 +7,7 @@ import falcon
 import psycopg
 import psycopg.sql as sql
 from psycopg.types.range import Range
+from swagger_ui import falcon_api_doc
 
 db_host = os.environ['POSTGRES_HOST']
 db_dbname = os.environ['POSTGRES_DB']
@@ -319,12 +320,18 @@ class StripTrailingSlashMiddleware:
             req.path = req.path.rstrip('/')
 
 
+def default_sink(req: falcon.Request, resp: falcon.Response, **kwargs):
+    """Redirect all unknown paths to the documentation."""
+    raise falcon.HTTPMovedPermanently('/doc')
+
+
 application = falcon.App(
     cors_enable=True,
-    middleware=StripTrailingSlashMiddleware()
+    middleware=StripTrailingSlashMiddleware(),
+    sink_before_static_route=False
 )
-# Show a landing page with descriptions based on README.
-application.add_static_route('/', '/app/html', fallback_filename='index.html')
 application.add_route('/vrp', VRPResource())
 application.add_route('/status', StatusResource())
 application.add_route('/metadata', MetadataResource())
+falcon_api_doc(application, config_path='/app/html/openapi.yaml', url_prefix='/doc', title='RPKI History API')
+application.add_sink(default_sink)
