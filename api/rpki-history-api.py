@@ -306,20 +306,6 @@ class MetadataResource:
             }
 
 
-class StripTrailingSlashMiddleware:
-    """Strip the trailing slash from the path before routing to support both types of
-    syntax:
-      * /endpoint <- authoritative
-      * /endpoint/
-    """
-
-    def process_request(self, req: falcon.Request, resp: falcon.Response):
-        # Do not strip the root (although it would still work due to our fallback
-        # route).
-        if req.path != '/':
-            req.path = req.path.rstrip('/')
-
-
 def default_sink(req: falcon.Request, resp: falcon.Response, **kwargs):
     """Redirect all unknown paths to the documentation."""
     raise falcon.HTTPMovedPermanently('/doc')
@@ -327,9 +313,9 @@ def default_sink(req: falcon.Request, resp: falcon.Response, **kwargs):
 
 application = falcon.App(
     cors_enable=True,
-    middleware=StripTrailingSlashMiddleware(),
     sink_before_static_route=False
 )
+application.req_options.strip_url_path_trailing_slash = True
 application.add_route('/vrp', VRPResource())
 application.add_route('/status', StatusResource())
 application.add_route('/metadata', MetadataResource())
