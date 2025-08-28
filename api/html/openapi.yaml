@@ -61,6 +61,8 @@ tags:
     description: Get RPKI status
   - name: metadata
     description: Get information about dumps imported into the database
+servers:
+  - url: /rpki-history/api
 paths:
   /vrp:
     get:

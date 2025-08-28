@@ -14,6 +14,7 @@ db_dbname = os.environ['POSTGRES_DB']
 db_user = os.environ['POSTGRES_RO_USER']
 with open('/run/secrets/postgres-ro-pw', 'r') as f:
     db_password = f.read()
+custom_location = os.environ.get('CUSTOM_LOCATION', default='').rstrip('/')
 
 # These are the column names which should be retrieved from the database.
 vrp_dict_fields = ['prefix', 'asn', 'max_length', 'visible']
@@ -291,15 +292,7 @@ class MetadataResource:
             # remaining results exactly, but better than nothing.
             next_uri = str()
             if len(formatted_results) == page_size:
-                # Not sure how to solve this. If the application is proxied via a custom
-                # path, this part of the path is hidden, i.e., if the original URL is
-                # [schema]://[base]/some/path/metadata, the request object only contains
-                # [schema]://[base]/metadata.
-                # To solve this we pass the missing path information as a custom HTTP
-                # header...
-                proxy_path = req.get_header('x-proxy-path')
-                uri_base = '/'.join([e.strip('/') for e in [req.prefix, proxy_path, req.uri_template] if e])
-                next_uri = falcon.uri.encode(f'{uri_base}?' + '&'.join(uri_parameters))
+                next_uri = falcon.uri.encode(f'{req.uri}?' + '&'.join(uri_parameters))
             resp.media = {
                 'next': next_uri,
                 'results': formatted_results
@@ -308,7 +301,7 @@ class MetadataResource:
 
 def default_sink(req: falcon.Request, resp: falcon.Response, **kwargs):
     """Redirect all unknown paths to the documentation."""
-    raise falcon.HTTPMovedPermanently('/doc')
+    raise falcon.HTTPMovedPermanently(f'{custom_location}/docs')
 
 
 application = falcon.App(
@@ -316,8 +309,19 @@ application = falcon.App(
     sink_before_static_route=False
 )
 application.req_options.strip_url_path_trailing_slash = True
-application.add_route('/vrp', VRPResource())
-application.add_route('/status', StatusResource())
-application.add_route('/metadata', MetadataResource())
-falcon_api_doc(application, config_path='/app/html/openapi.yaml', url_prefix='/doc', title='RPKI History API')
+application.add_route(f'{custom_location}/vrp', VRPResource())
+application.add_route(f'{custom_location}/status', StatusResource())
+application.add_route(f'{custom_location}/metadata', MetadataResource())
+
+swagger_parameters = {
+    'deepLinking': 'false',
+    'defaultModelsExpandDepth': -1,
+    'layout': '"BaseLayout"',
+    'presets': '[SwaggerUIBundle.presets.apis]',
+}
+falcon_api_doc(application,
+               parameters=swagger_parameters,
+               config_path='/app/html/openapi.yaml',
+               url_prefix=f'{custom_location}/docs',
+               title='RPKI History API')
 application.add_sink(default_sink)
